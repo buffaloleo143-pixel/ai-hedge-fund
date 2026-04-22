@@ -1,9 +1,10 @@
 from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news
+from src.tools.api import get_financial_metrics, get_market_cap, search_line_items, get_insider_trades, get_company_news, get_prices
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 import json
+from datetime import datetime, timedelta
 from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
@@ -13,6 +14,11 @@ class CharlieMungerSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: int
     reasoning: str
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 
 def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agent"):
@@ -58,6 +64,11 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
         
         progress.update_status(agent_id, ticker, "Getting market cap")
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+        
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
         
         progress.update_status(agent_id, ticker, "Fetching insider trades")
         # Munger values management with skin in the game
@@ -117,7 +128,8 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
             "predictability_analysis": predictability_analysis,
             "valuation_analysis": valuation_analysis,
             # Include some qualitative assessment from news
-            "news_sentiment": analyze_news_sentiment(company_news) if company_news else "No news data available"
+            "news_sentiment": analyze_news_sentiment(company_news) if company_news else "No news data available",
+            "current_price": current_price,
         }
         
         progress.update_status(agent_id, ticker, "Generating Charlie Munger analysis")
@@ -132,7 +144,12 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
         munger_analysis[ticker] = {
             "signal": munger_output.signal,
             "confidence": munger_output.confidence,
-            "reasoning": munger_output.reasoning
+            "reasoning": munger_output.reasoning,
+            "short_term_price": munger_output.short_term_price,
+            "medium_term_price": munger_output.medium_term_price,
+            "long_term_price": munger_output.long_term_price,
+            "target_buy_price": munger_output.target_buy_price,
+            "target_sell_price": munger_output.target_sell_price,
         }
         
         progress.update_status(agent_id, ticker, "Done", analysis=munger_output.reasoning)
@@ -834,8 +851,26 @@ def generate_munger_output(
          "{{\n"  # escaped {
          '  "signal": "bullish" | "bearish" | "neutral",\n'
          f'  "confidence": {confidence_hint},\n'
-         '  "reasoning": "short justification"\n'
-         "}}")  # escaped }
+         '  "reasoning": "short justification",\n'
+         '  "short_term_price": float or null,\n'
+         '  "medium_term_price": float or null,\n'
+         '  "long_term_price": float or null,\n'
+         '  "target_buy_price": float or null,\n'
+         '  "target_sell_price": float or null\n'
+         "}}\n"
+         "Additionally, provide price predictions based on your analysis:\n"
+         "- short_term_price: Expected price in 1-3 months\n"
+         "- medium_term_price: Expected price in 3-12 months\n"
+         "- long_term_price: Expected price in 1-3 years\n"
+         "- target_buy_price: Price at which you would recommend buying\n"
+         "- target_sell_price: Price at which you would recommend selling\n"
+         "Base these on current_price from the data provided.\n"
+                  "\n"
+                  "CRITICAL: current_price is the PER-SHARE stock price (NOT market cap or enterprise value).\n"
+                  "All your price predictions MUST be per-share prices, in the same unit as current_price.\n"
+                  "Your predictions should be reasonable adjustments from current_price (typically within 50%-200% of current_price).\n"
+                  "Do NOT output market-cap-scale numbers as price predictions.\n"
+                  "If you cannot estimate, set to null.")  # escaped }
     ])
 
     prompt = template.invoke({

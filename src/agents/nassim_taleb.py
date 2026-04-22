@@ -27,6 +27,11 @@ class NassimTalebSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: int = Field(description="Confidence 0-100")
     reasoning: str = Field(description="Reasoning for the decision")
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 
 def nassim_taleb_agent(state: AgentState, agent_id: str = "nassim_taleb_agent"):
@@ -123,6 +128,10 @@ def nassim_taleb_agent(state: AgentState, agent_id: str = "nassim_taleb_agent"):
             + black_swan_analysis["max_score"]
         )
 
+        # Get unadjusted current price for accurate per-share reference
+        prices_unadj = get_prices(ticker, start_date, end_date, api_key=api_key, adjust="")
+        current_price = prices_unadj[-1].close if prices_unadj else None
+
         analysis_data[ticker] = {
             "ticker": ticker,
             "score": total_score,
@@ -135,6 +144,7 @@ def nassim_taleb_agent(state: AgentState, agent_id: str = "nassim_taleb_agent"):
             "volatility_regime_analysis": volatility_regime_analysis,
             "black_swan_analysis": black_swan_analysis,
             "market_cap": market_cap,
+            "current_price": current_price,
         }
 
         progress.update_status(agent_id, ticker, "Generating Nassim Taleb analysis")
@@ -149,6 +159,11 @@ def nassim_taleb_agent(state: AgentState, agent_id: str = "nassim_taleb_agent"):
             "signal": taleb_output.signal,
             "confidence": taleb_output.confidence,
             "reasoning": taleb_output.reasoning,
+            "short_term_price": taleb_output.short_term_price,
+            "medium_term_price": taleb_output.medium_term_price,
+            "long_term_price": taleb_output.long_term_price,
+            "target_buy_price": taleb_output.target_buy_price,
+            "target_sell_price": taleb_output.target_sell_price,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=taleb_output.reasoning)
@@ -738,8 +753,26 @@ def generate_taleb_output(
                 "{{\n"
                 '  "signal": "bullish" | "bearish" | "neutral",\n'
                 '  "confidence": int,\n'
-                '  "reasoning": "short justification"\n'
-                "}}",
+                '  "reasoning": "short justification",\n'
+                '  "short_term_price": float or null,\n'
+                '  "medium_term_price": float or null,\n'
+                '  "long_term_price": float or null,\n'
+                '  "target_buy_price": float or null,\n'
+                '  "target_sell_price": float or null\n'
+                "}}\n\n"
+                "Additionally, provide price predictions based on your analysis:\n"
+                "- short_term_price: Expected price in 1-3 months\n"
+                "- medium_term_price: Expected price in 3-12 months\n"
+                "- long_term_price: Expected price in 1-3 years\n"
+                "- target_buy_price: Price at which you would recommend buying\n"
+                "- target_sell_price: Price at which you would recommend selling\n"
+                "current_price is provided in the analysis data. Base these price predictions on current_price.\n"
+                                "\n"
+                                "CRITICAL: current_price is the PER-SHARE stock price (NOT market cap or enterprise value).\n"
+                                "All your price predictions MUST be per-share prices, in the same unit as current_price.\n"
+                                "Your predictions should be reasonable adjustments from current_price (typically within 50%-200% of current_price).\n"
+                                "Do NOT output market-cap-scale numbers as price predictions.\n"
+                                "If you cannot estimate, set to null.",
             ),
         ]
     )

@@ -53,14 +53,25 @@ def portfolio_management_agent(state: AgentState, agent_id: str = "portfolio_man
         else:
             max_shares[ticker] = 0
 
-        # Compress analyst signals to {sig, conf}
+        # Compress analyst signals to {sig, conf, price predictions}
         ticker_signals = {}
         for agent, signals in analyst_signals.items():
             if not agent.startswith("risk_management_agent") and ticker in signals:
                 sig = signals[ticker].get("signal")
                 conf = signals[ticker].get("confidence")
                 if sig is not None and conf is not None:
-                    ticker_signals[agent] = {"sig": sig, "conf": conf}
+                    entry = {"sig": sig, "conf": conf}
+                    # Include price prediction fields
+                    pred_fields = {
+                        "short_term_price": signals[ticker].get("short_term_price"),
+                        "medium_term_price": signals[ticker].get("medium_term_price"),
+                        "long_term_price": signals[ticker].get("long_term_price"),
+                        "target_buy_price": signals[ticker].get("target_buy_price"),
+                        "target_sell_price": signals[ticker].get("target_sell_price"),
+                    }
+                    if any(v is not None for v in pred_fields.values()):
+                        entry["pred"] = pred_fields
+                    ticker_signals[agent] = entry
         signals_by_ticker[ticker] = ticker_signals
 
     state["data"]["current_prices"] = current_prices
@@ -157,8 +168,14 @@ def compute_allowed_actions(
     return allowed
 
 
+def _safe_avg(values: list) -> float | None:
+    """Compute average of non-None numeric values; return None if empty."""
+    valid = [v for v in values if v is not None]
+    return round(sum(valid) / len(valid), 2) if valid else None
+
+
 def _compact_signals(signals_by_ticker: dict[str, dict]) -> dict[str, dict]:
-    """Keep only {agent: {sig, conf}} and drop empty agents."""
+    """Keep {agent: {sig, conf, price predictions}} and drop empty agents."""
     out = {}
     for t, agents in signals_by_ticker.items():
         if not agents:
@@ -169,7 +186,19 @@ def _compact_signals(signals_by_ticker: dict[str, dict]) -> dict[str, dict]:
             sig = payload.get("sig") or payload.get("signal")
             conf = payload.get("conf") if "conf" in payload else payload.get("confidence")
             if sig is not None and conf is not None:
-                compact[agent] = {"sig": sig, "conf": conf}
+                entry = {"sig": sig, "conf": conf}
+                # Extract price prediction fields
+                pred_fields = {
+                    "short_term_price": payload.get("short_term_price"),
+                    "medium_term_price": payload.get("medium_term_price"),
+                    "long_term_price": payload.get("long_term_price"),
+                    "target_buy_price": payload.get("target_buy_price"),
+                    "target_sell_price": payload.get("target_sell_price"),
+                }
+                # Only include if at least one prediction field is present
+                if any(v is not None for v in pred_fields.values()):
+                    entry["pred"] = pred_fields
+                compact[agent] = entry
         out[t] = compact
     return out
 
@@ -208,6 +237,28 @@ def generate_trading_decision(
     compact_signals = _compact_signals({t: signals_by_ticker.get(t, {}) for t in tickers_for_llm})
     compact_allowed = {t: allowed_actions_full[t] for t in tickers_for_llm}
 
+    # Build price prediction summary per ticker
+    price_summary = {}
+    for t in tickers_for_llm:
+        preds = []
+        for agent, payload in compact_signals.get(t, {}).items():
+            pred = payload.get("pred", {})
+            if pred:
+                preds.append(pred)
+        if preds:
+            avg_short = _safe_avg([p.get("short_term_price") for p in preds])
+            avg_mid = _safe_avg([p.get("medium_term_price") for p in preds])
+            avg_long = _safe_avg([p.get("long_term_price") for p in preds])
+            avg_buy = _safe_avg([p.get("target_buy_price") for p in preds])
+            avg_sell = _safe_avg([p.get("target_sell_price") for p in preds])
+            price_summary[t] = {
+                "avg_short_term": avg_short,
+                "avg_medium_term": avg_mid,
+                "avg_long_term": avg_long,
+                "avg_target_buy": avg_buy,
+                "avg_target_sell": avg_sell,
+            }
+
     # Minimal prompt template
     template = ChatPromptTemplate.from_messages(
         [
@@ -215,6 +266,11 @@ def generate_trading_decision(
                 "system",
                 "You are a portfolio manager.\n"
                 "Inputs per ticker: analyst signals and allowed actions with max qty (already validated).\n"
+                "Each analyst signal may include 'pred' with price predictions (short/medium/long term, target buy/sell).\n"
+                "A 'price_consensus' section provides the averaged price predictions across all analysts.\n"
+                "Use the price consensus to inform your buy/sell/hold decisions — for example, "
+                "if current price is well below avg_target_buy, a buy may be warranted; "
+                "if current price is near or above avg_target_sell, consider selling.\n"
                 "Pick one allowed action per ticker and a quantity ≤ the max. "
                 "Keep reasoning very concise (max 100 chars). No cash or margin math. Return JSON only."
             ),
@@ -222,6 +278,7 @@ def generate_trading_decision(
                 "human",
                 "Signals:\n{signals}\n\n"
                 "Allowed:\n{allowed}\n\n"
+                "Price Consensus:\n{price_consensus}\n\n"
                 "Format:\n"
                 "{{\n"
                 '  "decisions": {{\n'
@@ -235,6 +292,7 @@ def generate_trading_decision(
     prompt_data = {
         "signals": json.dumps(compact_signals, separators=(",", ":"), ensure_ascii=False),
         "allowed": json.dumps(compact_allowed, separators=(",", ":"), ensure_ascii=False),
+        "price_consensus": json.dumps(price_summary, separators=(",", ":"), ensure_ascii=False) if price_summary else "N/A",
     }
     prompt = template.invoke(prompt_data)
 

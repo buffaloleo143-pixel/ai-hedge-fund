@@ -4,7 +4,8 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 import json
 from typing_extensions import Literal
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
+from src.tools.api import get_financial_metrics, get_market_cap, search_line_items, get_prices
+from datetime import datetime, timedelta
 from src.utils.llm import call_llm
 from src.utils.progress import progress
 from src.utils.api_key import get_api_key_from_state
@@ -13,6 +14,11 @@ class RakeshJhunjhunwalaSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 def rakesh_jhunjhunwala_agent(state: AgentState, agent_id: str = "rakesh_jhunjhunwala_agent"):
     """Analyzes stocks using Rakesh Jhunjhunwala's principles and LLM reasoning."""
@@ -54,6 +60,11 @@ def rakesh_jhunjhunwala_agent(state: AgentState, agent_id: str = "rakesh_jhunjhu
 
         progress.update_status(agent_id, ticker, "Getting market cap")
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
 
         # ─── Analyses ───────────────────────────────────────────────────────────
         progress.update_status(agent_id, ticker, "Analyzing growth")
@@ -116,7 +127,7 @@ def rakesh_jhunjhunwala_agent(state: AgentState, agent_id: str = "rakesh_jhunjhu
         intrinsic_value_analysis = analyze_rakesh_jhunjhunwala_style(
             financial_line_items, 
             intrinsic_value=intrinsic_value,
-            current_price=market_cap
+            current_price=current_price
         )
 
         analysis_data[ticker] = {
@@ -132,6 +143,7 @@ def rakesh_jhunjhunwala_agent(state: AgentState, agent_id: str = "rakesh_jhunjhu
             "intrinsic_value_analysis": intrinsic_value_analysis,
             "intrinsic_value": intrinsic_value,
             "market_cap": market_cap,
+            "current_price": current_price,
         }
 
         # ─── LLM: craft Jhunjhunwala‑style narrative ──────────────────────────────
@@ -686,8 +698,29 @@ def generate_jhunjhunwala_output(
                 {{
                   "signal": "bullish" | "bearish" | "neutral",
                   "confidence": float between 0 and 100,
-                  "reasoning": "string"
+                  "reasoning": "string",
+                  "short_term_price": float or null,
+                  "medium_term_price": float or null,
+                  "long_term_price": float or null,
+                  "target_buy_price": float or null,
+                  "target_sell_price": float or null
                 }}
+
+                Additionally, provide price predictions based on your analysis:
+                - short_term_price: Expected price in 1-3 months
+                - medium_term_price: Expected price in 3-12 months
+                - long_term_price: Expected price in 1-3 years
+                - target_buy_price: Price at which you would recommend buying
+                - target_sell_price: Price at which you would recommend selling
+
+                IMPORTANT: All price predictions must be per share price, NOT total market value.
+                current_price is provided in the analysis data. Base these price predictions on current_price.
+
+                CRITICAL: current_price is the PER-SHARE stock price (NOT market cap or enterprise value).
+                All your price predictions MUST be per-share prices, in the same unit as current_price.
+                Your predictions should be reasonable adjustments from current_price (typically within 50%-200% of current_price).
+                Do NOT output market-cap-scale numbers as price predictions.
+                If you cannot estimate, set to null.
                 """,
             ),
         ]

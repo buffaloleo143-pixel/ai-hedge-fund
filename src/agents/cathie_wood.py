@@ -1,5 +1,5 @@
 from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
+from src.tools.api import get_financial_metrics, get_market_cap, search_line_items, get_prices
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
@@ -8,12 +8,18 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 from src.utils.api_key import get_api_key_from_state
+from datetime import datetime, timedelta
 
 
 class CathieWoodSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 
 def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
@@ -62,6 +68,11 @@ def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
         progress.update_status(agent_id, ticker, "Getting market cap")
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
 
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
+
         progress.update_status(agent_id, ticker, "Analyzing disruptive potential")
         disruptive_analysis = analyze_disruptive_potential(metrics, financial_line_items)
 
@@ -82,7 +93,7 @@ def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
         else:
             signal = "neutral"
 
-        analysis_data[ticker] = {"signal": signal, "score": total_score, "max_score": max_possible_score, "disruptive_analysis": disruptive_analysis, "innovation_analysis": innovation_analysis, "valuation_analysis": valuation_analysis}
+        analysis_data[ticker] = {"signal": signal, "score": total_score, "max_score": max_possible_score, "disruptive_analysis": disruptive_analysis, "innovation_analysis": innovation_analysis, "valuation_analysis": valuation_analysis, "current_price": current_price}
 
         progress.update_status(agent_id, ticker, "Generating Cathie Wood analysis")
         cw_output = generate_cathie_wood_output(
@@ -92,7 +103,7 @@ def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
             agent_id=agent_id,
         )
 
-        cw_analysis[ticker] = {"signal": cw_output.signal, "confidence": cw_output.confidence, "reasoning": cw_output.reasoning}
+        cw_analysis[ticker] = {"signal": cw_output.signal, "confidence": cw_output.confidence, "reasoning": cw_output.reasoning, "short_term_price": cw_output.short_term_price, "medium_term_price": cw_output.medium_term_price, "long_term_price": cw_output.long_term_price, "target_buy_price": cw_output.target_buy_price, "target_sell_price": cw_output.target_sell_price}
 
         progress.update_status(agent_id, ticker, "Done", analysis=cw_output.reasoning)
 
@@ -412,8 +423,27 @@ def generate_cathie_wood_output(
             {{
               "signal": "bullish/bearish/neutral",
               "confidence": float (0-100),
-              "reasoning": "string"
+              "reasoning": "string",
+              "short_term_price": float or null,
+              "medium_term_price": float or null,
+              "long_term_price": float or null,
+              "target_buy_price": float or null,
+              "target_sell_price": float or null
             }}
+
+            Additionally, provide price predictions based on your analysis:
+            - short_term_price: Expected price in 1-3 months
+            - medium_term_price: Expected price in 3-12 months
+            - long_term_price: Expected price in 1-3 years
+            - target_buy_price: Price at which you would recommend buying
+            - target_sell_price: Price at which you would recommend selling
+            current_price is provided in the analysis data. Base these price predictions on current_price.
+            
+                        CRITICAL: current_price is the PER-SHARE stock price (NOT market cap or enterprise value).
+                        All your price predictions MUST be per-share prices, in the same unit as current_price.
+                        Your predictions should be reasonable adjustments from current_price (typically within 50%-300% of current_price for growth stocks).
+                        Do NOT output market-cap-scale numbers as price predictions.
+                        If you cannot estimate, set to null.
             """,
             ),
         ]

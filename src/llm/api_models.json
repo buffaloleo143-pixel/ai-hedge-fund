@@ -1,5 +1,10 @@
 [
   {
+    "display_name": "Qwen3 Coder Plus",
+    "model_name": "qwen3-coder-plus",
+    "provider": "OpenAI"
+  },
+  {
     "display_name": "Grok 4",
     "model_name": "grok-4-0709",
     "provider": "xAI"

@@ -4,6 +4,7 @@ from src.tools.api import (
     search_line_items,
     get_insider_trades,
     get_company_news,
+    get_prices,
 )
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
@@ -13,6 +14,7 @@ from typing_extensions import Literal
 from src.utils.progress import progress
 from src.utils.llm import call_llm
 from src.utils.api_key import get_api_key_from_state
+from datetime import datetime, timedelta
 
 
 class PeterLynchSignal(BaseModel):
@@ -22,6 +24,11 @@ class PeterLynchSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 
 def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
@@ -73,6 +80,11 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
 
         progress.update_status(agent_id, ticker, "Getting market cap")
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
 
         progress.update_status(agent_id, ticker, "Fetching insider trades")
         insider_trades = get_insider_trades(ticker, end_date, limit=50, api_key=api_key)
@@ -126,6 +138,7 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
             "fundamentals_analysis": fundamentals_analysis,
             "sentiment_analysis": sentiment_analysis,
             "insider_activity": insider_activity,
+            "current_price": current_price,
         }
 
         progress.update_status(agent_id, ticker, "Generating Peter Lynch analysis")
@@ -140,6 +153,11 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
             "signal": lynch_output.signal,
             "confidence": lynch_output.confidence,
             "reasoning": lynch_output.reasoning,
+            "short_term_price": lynch_output.short_term_price,
+            "medium_term_price": lynch_output.medium_term_price,
+            "long_term_price": lynch_output.long_term_price,
+            "target_buy_price": lynch_output.target_buy_price,
+            "target_sell_price": lynch_output.target_sell_price,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=lynch_output.reasoning)
@@ -472,8 +490,26 @@ def generate_lynch_output(
                 {{
                   "signal": "bullish" | "bearish" | "neutral",
                   "confidence": 0 to 100,
-                  "reasoning": "string"
+                  "reasoning": "string",
+                  "short_term_price": float or null,
+                  "medium_term_price": float or null,
+                  "long_term_price": float or null,
+                  "target_buy_price": float or null,
+                  "target_sell_price": float or null
                 }}
+
+                Additionally, provide price predictions based on your analysis:
+                - short_term_price: Expected price in 1-3 months
+                - medium_term_price: Expected price in 3-12 months
+                - long_term_price: Expected price in 1-3 years
+                - target_buy_price: Price at which you would recommend buying
+                - target_sell_price: Price at which you would recommend selling
+
+                CRITICAL: current_price in the analysis data is the PER-SHARE stock price (NOT market cap or enterprise value).
+                All your price predictions MUST be per-share prices, in the same unit as current_price.
+                Your predictions should be reasonable adjustments from current_price (typically within 50%-200% of current_price).
+                Do NOT output market-cap-scale numbers as price predictions.
+                If you cannot estimate, set to null.
                 """,
             ),
             (

@@ -4,16 +4,22 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 import json
 from typing_extensions import Literal
-from src.tools.api import get_financial_metrics, get_market_cap, search_line_items
+from src.tools.api import get_financial_metrics, get_market_cap, search_line_items, get_prices
 from src.utils.llm import call_llm
 from src.utils.progress import progress
 from src.utils.api_key import get_api_key_from_state
+from datetime import datetime, timedelta
 
 
 class WarrenBuffettSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: int = Field(description="Confidence 0-100")
     reasoning: str = Field(description="Reasoning for the decision")
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 
 def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agent"):
@@ -57,6 +63,11 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
         progress.update_status(agent_id, ticker, "Getting market cap")
         # Get current market cap
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
 
         progress.update_status(agent_id, ticker, "Analyzing fundamentals")
         # Analyze fundamentals
@@ -118,6 +129,7 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
             "management_analysis": mgmt_analysis,
             "intrinsic_value_analysis": intrinsic_value_analysis,
             "market_cap": market_cap,
+            "current_price": current_price,
             "margin_of_safety": margin_of_safety,
         }
 
@@ -134,6 +146,11 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
             "signal": buffett_output.signal,
             "confidence": buffett_output.confidence,
             "reasoning": buffett_output.reasoning,
+            "short_term_price": buffett_output.short_term_price,
+            "medium_term_price": buffett_output.medium_term_price,
+            "long_term_price": buffett_output.long_term_price,
+            "target_buy_price": buffett_output.target_buy_price,
+            "target_sell_price": buffett_output.target_sell_price,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=buffett_output.reasoning)
@@ -802,8 +819,26 @@ def generate_buffett_output(
                 "{{\n"
                 '  "signal": "bullish" | "bearish" | "neutral",\n'
                 '  "confidence": int,\n'
-                '  "reasoning": "short justification"\n'
-                "}}"
+                '  "reasoning": "short justification",\n'
+                '  "short_term_price": float or null,\n'
+                '  "medium_term_price": float or null,\n'
+                '  "long_term_price": float or null,\n'
+                '  "target_buy_price": float or null,\n'
+                '  "target_sell_price": float or null\n'
+                "}}\n"
+                "Additionally, provide price predictions based on your analysis:\n"
+                "- short_term_price: Expected price in 1-3 months\n"
+                "- medium_term_price: Expected price in 3-12 months\n"
+                "- long_term_price: Expected price in 1-3 years\n"
+                "- target_buy_price: Price at which you would recommend buying\n"
+                "- target_sell_price: Price at which you would recommend selling\n"
+                "current_price is provided in the analysis data. Base these price predictions on current_price.\n"
+                                "\n"
+                                "CRITICAL: current_price is the PER-SHARE stock price (NOT market cap or enterprise value).\n"
+                                "All your price predictions MUST be per-share prices, in the same unit as current_price.\n"
+                                "Your predictions should be reasonable adjustments from current_price (typically within 50%-200% of current_price).\n"
+                                "Do NOT output market-cap-scale numbers as price predictions.\n"
+                                "If you cannot estimate, set to null."
             ),
         ]
     )

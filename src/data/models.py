@@ -149,11 +149,22 @@ class Portfolio(BaseModel):
     total_cash: float = 0.0
 
 
+class PricePrediction(BaseModel):
+    """价格预测模型 — 短中长期预测与目标买卖价"""
+    short_term: float | None = None        # 1-3月预测价
+    medium_term: float | None = None       # 3-12月预测价
+    long_term: float | None = None         # 1-3年预测价
+    target_buy_price: float | None = None  # 建议买入价
+    target_sell_price: float | None = None # 建议卖出价
+    prediction_reasoning: str | None = None # 预测逻辑说明
+
+
 class AnalystSignal(BaseModel):
     signal: str | None = None
     confidence: float | None = None
     reasoning: dict | str | None = None
     max_position_size: float | None = None  # For risk management signals
+    prediction: PricePrediction | None = None
 
 
 class TickerAnalysis(BaseModel):

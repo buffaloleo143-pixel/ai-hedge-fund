@@ -12,16 +12,23 @@ from src.tools.api import (
     get_financial_metrics,
     get_market_cap,
     search_line_items,
+    get_prices,
 )
 from src.utils.api_key import get_api_key_from_state
 from src.utils.llm import call_llm
 from src.utils.progress import progress
+from datetime import datetime, timedelta
 
 
 class AswathDamodaranSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float          # 0‒100
     reasoning: str
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 
 def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_agent"):
@@ -65,6 +72,11 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
 
         progress.update_status(agent_id, ticker, "Getting market cap")
         market_cap = get_market_cap(ticker, end_date, api_key=api_key)
+
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
 
         # ─── Analyses ───────────────────────────────────────────────────────────
         progress.update_status(agent_id, ticker, "Analyzing growth and reinvestment")
@@ -110,6 +122,7 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
             "relative_val_analysis": relative_val_analysis,
             "intrinsic_val_analysis": intrinsic_val_analysis,
             "market_cap": market_cap,
+            "current_price": current_price,
         }
 
         # ─── LLM: craft Damodaran-style narrative ──────────────────────────────
@@ -395,8 +408,27 @@ def generate_damodaran_output(
                 {{
                   "signal": "bullish" | "bearish" | "neutral",
                   "confidence": float (0-100),
-                  "reasoning": "string"
-                }}""",
+                  "reasoning": "string",
+                  "short_term_price": float or null,
+                  "medium_term_price": float or null,
+                  "long_term_price": float or null,
+                  "target_buy_price": float or null,
+                  "target_sell_price": float or null
+                }}
+
+                For the price fields, use the intrinsic value per share and DCF data provided.
+                current_price is provided in the analysis data. Base these price predictions on current_price:
+                - short_term_price: 1-3 month price target (near current market with small adjustment)
+                - medium_term_price: 3-12 month price target (partial convergence to intrinsic value)
+                - long_term_price: 1-3 year price target (full DCF intrinsic value per share)
+                - target_buy_price: recommended entry price with margin of safety (20-25% below intrinsic value)
+                - target_sell_price: recommended exit price (at or slightly above intrinsic value)
+
+                CRITICAL: current_price is the PER-SHARE stock price (NOT market cap or enterprise value).
+                All your price predictions MUST be per-share prices, in the same unit as current_price.
+                Your predictions should be reasonable adjustments from current_price (typically within 50%-200% of current_price).
+                Do NOT output market-cap-scale numbers as price predictions.
+                If per-share data is unavailable, set price fields to null.""",
             ),
         ]
     )

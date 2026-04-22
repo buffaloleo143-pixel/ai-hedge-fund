@@ -21,9 +21,23 @@ from src.data.models import (
     InsiderTradeResponse,
     CompanyFactsResponse,
 )
+from src.tools.akshare_provider import (
+    get_prices_ak,
+    get_financial_metrics_ak,
+    search_line_items_ak,
+    get_insider_trades_ak,
+    get_company_news_ak,
+    get_market_cap_ak,
+)
 
 # Global cache instance
 _cache = get_cache()
+
+
+def is_a_share(ticker: str) -> bool:
+    """判断是否A股ticker：6位纯数字 或 sh/sz/bj前缀+6位数字"""
+    clean = ticker.lower().replace("sh", "").replace("sz", "").replace("bj", "")
+    return clean.isdigit() and len(clean) == 6
 
 
 def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: dict = None, max_retries: int = 3) -> requests.Response:
@@ -60,8 +74,15 @@ def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: d
         return response
 
 
-def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None) -> list[Price]:
-    """Fetch price data from cache or API."""
+def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None, adjust: str = None) -> list[Price]:
+    """Fetch price data from cache or API.
+    
+    Args:
+        adjust: For A-shares only. "hfq" (backward adjusted, default), "qfq" (forward adjusted), "" (unadjusted).
+    """
+    # A股路由
+    if is_a_share(ticker):
+        return get_prices_ak(ticker, start_date, end_date, adjust=adjust)
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{start_date}_{end_date}"
     
@@ -104,6 +125,9 @@ def get_financial_metrics(
     api_key: str = None,
 ) -> list[FinancialMetrics]:
     """Fetch financial metrics from cache or API."""
+    # A股路由
+    if is_a_share(ticker):
+        return get_financial_metrics_ak(ticker, end_date, period, limit)
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{period}_{end_date}_{limit}"
     
@@ -147,6 +171,9 @@ def search_line_items(
     api_key: str = None,
 ) -> list[LineItem]:
     """Fetch line items from API."""
+    # A股路由
+    if is_a_share(ticker):
+        return search_line_items_ak(ticker, line_items, end_date, period, limit)
     # If not in cache or insufficient data, fetch from API
     headers = {}
     financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
@@ -188,6 +215,9 @@ def get_insider_trades(
     api_key: str = None,
 ) -> list[InsiderTrade]:
     """Fetch insider trades from cache or API."""
+    # A股路由
+    if is_a_share(ticker):
+        return get_insider_trades_ak(ticker, end_date, start_date, limit)
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
     
@@ -254,6 +284,9 @@ def get_company_news(
     api_key: str = None,
 ) -> list[CompanyNews]:
     """Fetch company news from cache or API."""
+    # A股路由
+    if is_a_share(ticker):
+        return get_company_news_ak(ticker, end_date, start_date, limit)
     # Create a cache key that includes all parameters to ensure exact matches
     cache_key = f"{ticker}_{start_date or 'none'}_{end_date}_{limit}"
     
@@ -318,6 +351,9 @@ def get_market_cap(
     api_key: str = None,
 ) -> float | None:
     """Fetch market cap from the API."""
+    # A股路由
+    if is_a_share(ticker):
+        return get_market_cap_ak(ticker, end_date)
     # Check if end_date is today
     if end_date == datetime.datetime.now().strftime("%Y-%m-%d"):
         # Get the market cap from company facts API

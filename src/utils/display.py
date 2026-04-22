@@ -3,6 +3,25 @@ from tabulate import tabulate
 from .analysts import ANALYST_ORDER
 import os
 import json
+import statistics
+
+
+def _fmt_price(value: float | None, bold: bool = False) -> str:
+    """Format a price value for display; return '-' if None."""
+    if value is None:
+        return f"{Fore.WHITE}-{Style.RESET_ALL}"
+    style = Style.BRIGHT if bold else ""
+    return f"{Fore.GREEN}{style}{value:.2f}{Style.RESET_ALL}"
+
+
+def _filtered_avg(values):
+    """Filter extreme outliers before averaging (median-based)."""
+    valid = [v for v in values if v is not None]
+    if len(valid) < 2:
+        return sum(valid) / len(valid) if valid else None
+    median = statistics.median(valid)
+    filtered = [v for v in valid if median / 10 <= v <= median * 10]
+    return sum(filtered) / len(filtered) if filtered else None
 
 
 def sort_agent_signals(signals):
@@ -219,6 +238,80 @@ def print_trading_output(result: dict) -> None:
             colalign=("left", "center", "right", "right", "center", "center", "center"),
         )
     )
+
+    # ── Price Prediction Summary ──
+    for ticker in decisions:
+        pred_rows = []
+        all_short = []
+        all_mid = []
+        all_long = []
+        all_buy = []
+        all_sell = []
+
+        for agent, signals in analyst_signals.items():
+            if agent == "risk_management_agent" or ticker not in signals:
+                continue
+            sig_data = signals[ticker]
+            sp = sig_data.get("short_term_price")
+            mp = sig_data.get("medium_term_price")
+            lp = sig_data.get("long_term_price")
+            tb = sig_data.get("target_buy_price")
+            ts = sig_data.get("target_sell_price")
+
+            # Only include agents that have at least one prediction
+            if any(v is not None for v in [sp, mp, lp, tb, ts]):
+                agent_name = agent.replace("_agent", "").replace("_", " ").title()
+                pred_rows.append([
+                    f"{Fore.CYAN}{agent_name}{Style.RESET_ALL}",
+                    _fmt_price(sp),
+                    _fmt_price(mp),
+                    _fmt_price(lp),
+                    _fmt_price(tb),
+                    _fmt_price(ts),
+                ])
+                if sp is not None: all_short.append(sp)
+                if mp is not None: all_mid.append(mp)
+                if lp is not None: all_long.append(lp)
+                if tb is not None: all_buy.append(tb)
+                if ts is not None: all_sell.append(ts)
+
+        if pred_rows:
+            # Sort rows according to predefined analyst order
+            pred_rows = sort_agent_signals(pred_rows)
+
+            # Add average row (with outlier filtering)
+            avg_short = round(_filtered_avg(all_short), 2) if all_short else None
+            avg_mid = round(_filtered_avg(all_mid), 2) if all_mid else None
+            avg_long = round(_filtered_avg(all_long), 2) if all_long else None
+            avg_buy = round(_filtered_avg(all_buy), 2) if all_buy else None
+            avg_sell = round(_filtered_avg(all_sell), 2) if all_sell else None
+
+            pred_rows.append([
+                f"{Fore.WHITE}{Style.BRIGHT}均值{Style.RESET_ALL}",
+                _fmt_price(avg_short, bold=True),
+                _fmt_price(avg_mid, bold=True),
+                _fmt_price(avg_long, bold=True),
+                _fmt_price(avg_buy, bold=True),
+                _fmt_price(avg_sell, bold=True),
+            ])
+
+            pred_headers = [
+                f"{Fore.WHITE}Agent",
+                f"{Fore.WHITE}短期预测",
+                f"{Fore.WHITE}中期预测",
+                f"{Fore.WHITE}长期预测",
+                f"{Fore.WHITE}买入价",
+                f"{Fore.WHITE}卖出价",
+            ]
+            print(f"\n{Fore.WHITE}{Style.BRIGHT}PRICE PREDICTION SUMMARY:{Style.RESET_ALL} [{Fore.CYAN}{ticker}{Style.RESET_ALL}]")
+            print(
+                tabulate(
+                    pred_rows,
+                    headers=pred_headers,
+                    tablefmt="grid",
+                    colalign=("left", "right", "right", "right", "right", "right"),
+                )
+            )
     
     # Print Portfolio Manager's reasoning if available
     if portfolio_manager_reasoning:

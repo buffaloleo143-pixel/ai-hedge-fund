@@ -21,6 +21,11 @@ class StanleyDruckenmillerSignal(BaseModel):
     signal: Literal["bullish", "bearish", "neutral"]
     confidence: float
     reasoning: str
+    short_term_price: float | None = None    # 1-3月预测价
+    medium_term_price: float | None = None   # 3-12月预测价
+    long_term_price: float | None = None     # 1-3年预测价
+    target_buy_price: float | None = None    # 建议买入价
+    target_sell_price: float | None = None   # 建议卖出价
 
 
 def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druckenmiller_agent"):
@@ -123,6 +128,10 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
         else:
             signal = "neutral"
 
+        # Get unadjusted current price for accurate per-share reference
+        prices_unadj = get_prices(ticker, start_date=start_date, end_date=end_date, api_key=api_key, adjust="")
+        current_price = prices_unadj[-1].close if prices_unadj else None
+
         analysis_data[ticker] = {
             "signal": signal,
             "score": total_score,
@@ -132,6 +141,7 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
             "insider_activity": insider_activity,
             "risk_reward_analysis": risk_reward_analysis,
             "valuation_analysis": valuation_analysis,
+            "current_price": current_price,
         }
 
         progress.update_status(agent_id, ticker, "Generating Stanley Druckenmiller analysis")
@@ -146,6 +156,11 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
             "signal": druck_output.signal,
             "confidence": druck_output.confidence,
             "reasoning": druck_output.reasoning,
+            "short_term_price": druck_output.short_term_price,
+            "medium_term_price": druck_output.medium_term_price,
+            "long_term_price": druck_output.long_term_price,
+            "target_buy_price": druck_output.target_buy_price,
+            "target_sell_price": druck_output.target_sell_price,
         }
 
         progress.update_status(agent_id, ticker, "Done", analysis=druck_output.reasoning)
@@ -577,8 +592,27 @@ def generate_druckenmiller_output(
               {{
                 "signal": "bullish/bearish/neutral",
                 "confidence": float (0-100),
-                "reasoning": "string"
+                "reasoning": "string",
+                "short_term_price": float or null,
+                "medium_term_price": float or null,
+                "long_term_price": float or null,
+                "target_buy_price": float or null,
+                "target_sell_price": float or null
               }}
+
+              Additionally, provide price predictions based on your analysis:
+              - short_term_price: Expected price in 1-3 months
+              - medium_term_price: Expected price in 3-12 months
+              - long_term_price: Expected price in 1-3 years
+              - target_buy_price: Price at which you would recommend buying
+              - target_sell_price: Price at which you would recommend selling
+              current_price is provided in the analysis data. Base these price predictions on current_price.
+              
+                              CRITICAL: current_price is the PER-SHARE stock price (NOT market cap or enterprise value).
+                              All your price predictions MUST be per-share prices, in the same unit as current_price.
+                              Your predictions should be reasonable adjustments from current_price (typically within 50%-200% of current_price).
+                              Do NOT output market-cap-scale numbers as price predictions.
+                              If you cannot estimate, set to null.
               """,
             ),
         ]

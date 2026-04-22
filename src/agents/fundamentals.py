@@ -4,7 +4,8 @@ from src.utils.api_key import get_api_key_from_state
 from src.utils.progress import progress
 import json
 
-from src.tools.api import get_financial_metrics
+from src.tools.api import get_financial_metrics, get_prices
+from datetime import datetime, timedelta
 
 
 ##### Fundamental Agent #####
@@ -35,6 +36,12 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
 
         # Pull the most recent financial metrics
         metrics = financial_metrics[0]
+
+        # Fetch current price for accurate price targets
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
 
         # Initialize signals list for different fundamental aspects
         signals = []
@@ -134,9 +141,18 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
         total_signals = len(signals)
         confidence = round(max(bullish_signals, bearish_signals) / total_signals, 2) * 100
 
+        # Calculate price targets based on fundamental metrics
+        price_targets = calculate_fundamental_price_targets(metrics, overall_signal, current_price)
+
         fundamental_analysis[ticker] = {
             "signal": overall_signal,
             "confidence": confidence,
+            "short_term_price": price_targets["short_term_price"],
+            "medium_term_price": price_targets["medium_term_price"],
+            "long_term_price": price_targets["long_term_price"],
+            "target_buy_price": price_targets["target_buy_price"],
+            "target_sell_price": price_targets["target_sell_price"],
+            "current_price": current_price,
             "reasoning": reasoning,
         }
 
@@ -160,4 +176,72 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
     return {
         "messages": [message],
         "data": data,
+    }
+
+
+def calculate_fundamental_price_targets(metrics, signal: str, current_price: float = None) -> dict:
+    """
+    Estimate price targets based on fundamental valuation metrics.
+    Uses EPS and P/E ratios to derive target prices for different time horizons.
+    """
+    eps = getattr(metrics, "earnings_per_share", None)
+    pe_ratio = getattr(metrics, "price_to_earnings_ratio", None)
+    revenue_growth = getattr(metrics, "revenue_growth", None)
+    earnings_growth = getattr(metrics, "earnings_growth", None)
+
+    # Cannot estimate without EPS and P/E
+    if not eps or not pe_ratio or eps <= 0 or pe_ratio <= 0:
+        return {
+            "short_term_price": None,
+            "medium_term_price": None,
+            "long_term_price": None,
+            "target_buy_price": None,
+            "target_sell_price": None,
+        }
+
+    # Current implied price from fundamentals
+    current_implied = eps * pe_ratio
+    # Use actual current price as baseline if available and reasonable
+    if current_price and current_price > 0:
+        current_implied = current_price
+
+    # Growth adjustments by signal
+    if signal == "bullish":
+        growth_short = 1 + (earnings_growth or revenue_growth or 0.10)
+        growth_medium = growth_short ** 1.5
+        growth_long = growth_short ** 3.0
+        pe_adjustment = 1.05  # slight P/E expansion for bullish
+    elif signal == "bearish":
+        growth_short = 1 + min(earnings_growth or revenue_growth or -0.05, 0)
+        growth_medium = growth_short ** 1.5
+        growth_long = growth_short ** 3.0
+        pe_adjustment = 0.95  # slight P/E compression for bearish
+    else:
+        growth_short = 1 + (earnings_growth or revenue_growth or 0.05)
+        growth_medium = growth_short ** 1.5
+        growth_long = growth_short ** 3.0
+        pe_adjustment = 1.0
+
+    # When we have actual current_price, use it as the base for predictions
+    # (eps * pe may diverge significantly from actual price for A-shares)
+    if current_price and current_price > 0:
+        short_term_price = round(current_price * growth_short * pe_adjustment, 2)
+        medium_term_price = round(current_price * growth_medium * pe_adjustment, 2)
+        long_term_price = round(current_price * growth_long * pe_adjustment, 2)
+    else:
+        target_pe = pe_ratio * pe_adjustment
+        short_term_price = round(eps * growth_short * target_pe, 2)
+        medium_term_price = round(eps * growth_medium * target_pe, 2)
+        long_term_price = round(eps * growth_long * target_pe, 2)
+
+    # Buy/sell targets: 10% discount / 15% premium from current implied
+    target_buy_price = round(current_implied * 0.90, 2)
+    target_sell_price = round(current_implied * 1.15, 2)
+
+    return {
+        "short_term_price": short_term_price,
+        "medium_term_price": medium_term_price,
+        "long_term_price": long_term_price,
+        "target_buy_price": target_buy_price,
+        "target_sell_price": target_sell_price,
     }

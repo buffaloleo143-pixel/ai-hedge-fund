@@ -6,9 +6,10 @@ from src.data.models import CompanyNews
 import pandas as pd
 import numpy as np
 import json
+from datetime import datetime, timedelta
 
 from src.graph.state import AgentState, show_agent_reasoning
-from src.tools.api import get_company_news
+from src.tools.api import get_company_news, get_prices
 from src.utils.api_key import get_api_key_from_state
 from src.utils.llm import call_llm
 from src.utils.progress import progress
@@ -51,6 +52,12 @@ def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agen
             limit=100,
             api_key=api_key,
         )
+
+        # Fetch current price for per-share price estimation
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices_list = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices_list[-1].close if prices_list else None
 
         company_news = company_news or []
         news_signals = []
@@ -135,10 +142,42 @@ def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agen
             }
         }
 
-        # Create the sentiment analysis
+        # Create the sentiment analysis with price predictions based on signal
+        if current_price and current_price > 0:
+            # Simple price adjustments based on sentiment signal
+            if overall_signal == "bullish":
+                short_term_price = round(current_price * 1.03, 2)
+                medium_term_price = round(current_price * 1.07, 2)
+                long_term_price = round(current_price * 1.12, 2)
+                target_buy_price = round(current_price * 0.95, 2)
+                target_sell_price = round(current_price * 1.15, 2)
+            elif overall_signal == "bearish":
+                short_term_price = round(current_price * 0.97, 2)
+                medium_term_price = round(current_price * 0.93, 2)
+                long_term_price = round(current_price * 0.88, 2)
+                target_buy_price = round(current_price * 0.85, 2)
+                target_sell_price = round(current_price * 1.02, 2)
+            else:
+                short_term_price = round(current_price, 2)
+                medium_term_price = round(current_price * 1.02, 2)
+                long_term_price = round(current_price * 1.05, 2)
+                target_buy_price = round(current_price * 0.90, 2)
+                target_sell_price = round(current_price * 1.10, 2)
+        else:
+            short_term_price = None
+            medium_term_price = None
+            long_term_price = None
+            target_buy_price = None
+            target_sell_price = None
+
         sentiment_analysis[ticker] = {
             "signal": overall_signal,
             "confidence": confidence,
+            "short_term_price": short_term_price,
+            "medium_term_price": medium_term_price,
+            "long_term_price": long_term_price,
+            "target_buy_price": target_buy_price,
+            "target_sell_price": target_sell_price,
             "reasoning": reasoning,
         }
 

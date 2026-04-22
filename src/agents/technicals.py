@@ -52,7 +52,7 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     for ticker in tickers:
         progress.update_status(agent_id, ticker, "Analyzing price data")
 
-        # Get the historical price data
+        # Get the historical price data (backward adjusted for technical indicators)
         prices = get_prices(
             ticker=ticker,
             start_date=start_date,
@@ -66,6 +66,16 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
 
         # Convert prices to a DataFrame
         prices_df = prices_to_df(prices)
+
+        # Get unadjusted prices for accurate current price baseline
+        prices_unadj = get_prices(
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            api_key=api_key,
+            adjust="",
+        )
+        actual_current_price = prices_unadj[-1].close if prices_unadj else None
 
         progress.update_status(agent_id, ticker, "Calculating trend signals")
         trend_signals = calculate_trend_signals(prices_df)
@@ -103,10 +113,18 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
             strategy_weights,
         )
 
+        # Calculate price targets based on technical indicators
+        price_targets = calculate_technical_price_targets(prices_df, combined_signal["signal"], actual_current_price)
+
         # Generate detailed analysis report for this ticker
         technical_analysis[ticker] = {
             "signal": combined_signal["signal"],
             "confidence": round(combined_signal["confidence"] * 100),
+            "short_term_price": price_targets["short_term_price"],
+            "medium_term_price": price_targets["medium_term_price"],
+            "long_term_price": price_targets["long_term_price"],
+            "target_buy_price": price_targets["target_buy_price"],
+            "target_sell_price": price_targets["target_sell_price"],
             "reasoning": {
                 "trend_following": {
                     "signal": trend_signals["signal"],
@@ -154,6 +172,86 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     return {
         "messages": state["messages"] + [message],
         "data": data,
+    }
+
+
+def calculate_technical_price_targets(prices_df: pd.DataFrame, signal: str, actual_current_price: float = None) -> dict:
+    """
+    Calculate price targets based on technical indicators:
+    - Bollinger Bands for short-term targets
+    - EMA(21) and EMA(55) for medium-term targets
+    - EMA(200) or extended EMA(55) projection for long-term targets
+    - Lower Bollinger Band as buy target, Upper as sell target
+    
+    Args:
+        actual_current_price: Unadjusted actual current price (for A-shares). 
+                              If provided, targets are scaled to match this baseline.
+    """
+    current_price = safe_float(prices_df["close"].iloc[-1])
+    if current_price <= 0:
+        return {
+            "short_term_price": None,
+            "medium_term_price": None,
+            "long_term_price": None,
+            "target_buy_price": None,
+            "target_sell_price": None,
+        }
+
+    # Calculate adjustment factor if actual current price is provided
+    # This handles A-share backward-adjusted (hfq) prices which can be much higher than actual
+    adjustment_factor = 1.0
+    if actual_current_price and actual_current_price > 0:
+        adjustment_factor = actual_current_price / current_price
+
+    # Bollinger Bands (20-day)
+    bb_upper, bb_lower = calculate_bollinger_bands(prices_df)
+    bb_upper_val = safe_float(bb_upper.iloc[-1]) * adjustment_factor
+    bb_lower_val = safe_float(bb_lower.iloc[-1]) * adjustment_factor
+    bb_mid = (bb_upper_val + bb_lower_val) / 2
+
+    # EMA values (adjusted to actual price scale)
+    ema_21 = safe_float(calculate_ema(prices_df, 21).iloc[-1]) * adjustment_factor
+    ema_55 = safe_float(calculate_ema(prices_df, 55).iloc[-1]) * adjustment_factor
+
+    # Long-term: use EMA(200) if enough data, otherwise extend EMA(55)
+    if len(prices_df) >= 200:
+        ema_200 = safe_float(prices_df["close"].ewm(span=200, adjust=False).mean().iloc[-1]) * adjustment_factor
+    else:
+        # Project EMA(55) based on momentum
+        momentum = (ema_21 - ema_55) / ema_55 if ema_55 > 0 else 0
+        ema_200 = ema_55 * (1 + momentum * 1.5)
+
+    # ATR for volatility adjustment (scaled to actual price)
+    atr = calculate_atr(prices_df)
+    atr_val = safe_float(atr.iloc[-1]) * adjustment_factor if len(atr.dropna()) > 0 else current_price * adjustment_factor * 0.02
+    baseline = current_price * adjustment_factor
+
+    # Price targets based on signal direction
+    if signal == "bullish":
+        short_term_price = round(bb_upper_val if bb_upper_val > 0 else baseline * 1.03, 2)
+        medium_term_price = round(max(ema_21, ema_55) * 1.05, 2)
+        long_term_price = round(max(ema_200, baseline) * 1.10, 2)
+        target_buy_price = round(bb_mid - atr_val * 0.5, 2)
+        target_sell_price = round(bb_upper_val * 1.02 if bb_upper_val > 0 else baseline * 1.08, 2)
+    elif signal == "bearish":
+        short_term_price = round(bb_lower_val if bb_lower_val > 0 else baseline * 0.97, 2)
+        medium_term_price = round(min(ema_21, ema_55) * 0.95, 2)
+        long_term_price = round(min(ema_200, baseline) * 0.90, 2)
+        target_buy_price = round(bb_lower_val * 0.98 if bb_lower_val > 0 else baseline * 0.92, 2)
+        target_sell_price = round(bb_mid + atr_val * 0.5, 2)
+    else:  # neutral
+        short_term_price = round(bb_mid if bb_mid > 0 else baseline, 2)
+        medium_term_price = round((ema_21 + ema_55) / 2, 2)
+        long_term_price = round(ema_200, 2)
+        target_buy_price = round(bb_lower_val if bb_lower_val > 0 else baseline * 0.97, 2)
+        target_sell_price = round(bb_upper_val if bb_upper_val > 0 else baseline * 1.03, 2)
+
+    return {
+        "short_term_price": short_term_price,
+        "medium_term_price": medium_term_price,
+        "long_term_price": long_term_price,
+        "target_buy_price": target_buy_price,
+        "target_sell_price": target_sell_price,
     }
 
 

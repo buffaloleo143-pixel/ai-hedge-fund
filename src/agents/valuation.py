@@ -8,6 +8,7 @@ configurable weights.
 
 import json
 import statistics
+from datetime import datetime, timedelta
 from langchain_core.messages import HumanMessage
 from src.graph.state import AgentState, show_agent_reasoning
 from src.utils.progress import progress
@@ -16,6 +17,7 @@ from src.tools.api import (
     get_financial_metrics,
     get_market_cap,
     search_line_items,
+    get_prices,
 )
 
 def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analyst_agent"):
@@ -141,6 +143,12 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
             progress.update_status(agent_id, ticker, "Failed: Market cap unavailable")
             continue
 
+        # Fetch current price for per-share price estimation
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
+
         method_values = {
             "dcf": {"value": dcf_val, "weight": 0.35},
             "owner_earnings": {"value": owner_val, "weight": 0.35},
@@ -203,8 +211,48 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
         valuation_analysis[ticker] = {
             "signal": signal,
             "confidence": confidence,
+            "short_term_price": None,   # Valuation is company-wide; per-share needs shares data
+            "medium_term_price": None,
+            "long_term_price": None,
+            "target_buy_price": None,
+            "target_sell_price": None,
             "reasoning": reasoning,
         }
+
+        # Derive per-share price targets if shares data available
+        shares = getattr(li_curr, "outstanding_shares", None) or getattr(li_curr, "weighted_average_shares", None)
+        # Fallback: estimate shares from market_cap / current_price
+        if (not shares or shares <= 0) and market_cap and current_price and current_price > 0:
+            shares = market_cap / current_price
+        if shares and shares > 0:
+            # Weighted intrinsic value from all methods
+            iv_weighted = sum(
+                v["value"] * v["weight"] for v in method_values.values() if v["value"] > 0
+            ) / total_weight if total_weight > 0 else 0
+
+            if iv_weighted > 0:
+                iv_per_share = iv_weighted / shares
+                # Short-term: near market price (adjust by signal gap)
+                short_term = round(iv_per_share * (1 + weighted_gap * 0.3), 2)
+                medium_term = round(iv_per_share * (1 + weighted_gap * 0.6), 2)
+                long_term = round(iv_per_share, 2)
+
+                # DCF downside/upside for buy/sell targets
+                if dcf_results and dcf_results.get('downside', 0) > 0:
+                    target_buy = round(dcf_results['downside'] / shares, 2)
+                    target_sell = round(dcf_results['upside'] / shares, 2)
+                else:
+                    target_buy = round(iv_per_share * 0.85, 2)
+                    target_sell = round(iv_per_share * 1.15, 2)
+
+                valuation_analysis[ticker].update({
+                    "short_term_price": short_term,
+                    "medium_term_price": medium_term,
+                    "long_term_price": long_term,
+                    "target_buy_price": target_buy,
+                    "target_sell_price": target_sell,
+                })
+
         progress.update_status(agent_id, ticker, "Done", analysis=json.dumps(reasoning, indent=4))
 
     # ---- Emit message (for LLM tool chain) ----

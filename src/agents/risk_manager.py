@@ -34,6 +34,15 @@ def risk_management_agent(state: AgentState, agent_id: str = "risk_management_ag
             api_key=api_key,
         )
 
+        # Also get unadjusted prices for accurate current price
+        prices_unadj = get_prices(
+            ticker=ticker,
+            start_date=data["start_date"],
+            end_date=data["end_date"],
+            api_key=api_key,
+            adjust="",
+        )
+
         if not prices:
             progress.update_status(agent_id, ticker, "Warning: No price data found")
             volatility_data[ticker] = {
@@ -47,7 +56,7 @@ def risk_management_agent(state: AgentState, agent_id: str = "risk_management_ag
         prices_df = prices_to_df(prices)
         
         if not prices_df.empty and len(prices_df) > 1:
-            current_price = prices_df["close"].iloc[-1]
+            current_price = prices_unadj[-1].close if prices_unadj else prices_df["close"].iloc[-1]
             current_prices[ticker] = current_price
             
             # Calculate volatility metrics

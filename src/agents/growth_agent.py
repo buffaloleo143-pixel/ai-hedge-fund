@@ -14,7 +14,9 @@ from src.utils.api_key import get_api_key_from_state
 from src.tools.api import (
     get_financial_metrics,
     get_insider_trades,
+    get_prices,
 )
+from datetime import datetime, timedelta
 
 def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agent"):
     """Run growth analysis across tickers and write signals back to `state`."""
@@ -41,6 +43,12 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
             continue
         
         most_recent_metrics = financial_metrics[0]
+
+        # Fetch current price for accurate price targets
+        progress.update_status(agent_id, ticker, "Fetching current price")
+        start_price_date = (datetime.fromisoformat(end_date) - timedelta(days=30)).date().isoformat()
+        prices = get_prices(ticker, start_price_date, end_date, api_key=api_key, adjust="")
+        current_price = prices[-1].close if prices else None
 
         # --- Insider Trades ---
         insider_trades = get_insider_trades(
@@ -112,9 +120,18 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
             }
         }
 
+        # Calculate price targets based on growth metrics
+        price_targets = calculate_growth_price_targets(most_recent_metrics, growth_trends, signal, current_price)
+
         growth_analysis[ticker] = {
             "signal": signal,
             "confidence": confidence,
+            "short_term_price": price_targets["short_term_price"],
+            "medium_term_price": price_targets["medium_term_price"],
+            "long_term_price": price_targets["long_term_price"],
+            "target_buy_price": price_targets["target_buy_price"],
+            "target_sell_price": price_targets["target_sell_price"],
+            "current_price": current_price,
             "reasoning": reasoning,
         }
         progress.update_status(agent_id, ticker, "Done", analysis=json.dumps(reasoning, indent=4))
@@ -335,4 +352,69 @@ def check_financial_health(metrics) -> dict:
         "score": score,
         "debt_to_equity": debt_to_equity,
         "current_ratio": current_ratio
+    }
+
+
+def calculate_growth_price_targets(metrics, growth_trends: dict, signal: str, current_price: float = None) -> dict:
+    """
+    Estimate price targets based on growth-oriented valuation.
+    Uses PEG ratio and price-to-sales combined with revenue/EPS growth rates.
+    """
+    eps = getattr(metrics, "earnings_per_share", None)
+    pe_ratio = getattr(metrics, "price_to_earnings_ratio", None)
+    ps_ratio = getattr(metrics, "price_to_sales_ratio", None)
+    revenue_per_share = None
+
+    # Try to estimate revenue per share from P/S and EPS
+    if ps_ratio and pe_ratio and eps and eps > 0 and pe_ratio > 0:
+        implied_price = eps * pe_ratio
+        revenue_per_share = implied_price / ps_ratio if ps_ratio > 0 else None
+
+    rev_growth = growth_trends.get("revenue_growth") or 0.10
+    eps_growth = growth_trends.get("eps_growth") or rev_growth
+
+    if not eps or not pe_ratio or eps <= 0 or pe_ratio <= 0:
+        return {
+            "short_term_price": None,
+            "medium_term_price": None,
+            "long_term_price": None,
+            "target_buy_price": None,
+            "target_sell_price": None,
+        }
+
+    current_implied = eps * pe_ratio
+    # Use actual current price as baseline if available and reasonable
+    if current_price and current_price > 0:
+        current_implied = current_price
+
+    # Growth-adjusted price targets
+    if signal == "bullish":
+        peg_pe = pe_ratio * (1 + eps_growth * 0.5)  # P/E expansion with growth
+    elif signal == "bearish":
+        peg_pe = pe_ratio * (1 - abs(eps_growth) * 0.3)
+    else:
+        peg_pe = pe_ratio
+
+    # When we have actual current_price, use it as the base for predictions
+    # (eps * pe may diverge significantly from actual price for A-shares)
+    if current_price and current_price > 0:
+        growth_adj = (1 + eps_growth)
+        short_term_price = round(current_price * growth_adj * (peg_pe / pe_ratio), 2)
+        medium_term_price = round(current_price * growth_adj ** 2 * (peg_pe / pe_ratio), 2)
+        long_term_price = round(current_price * growth_adj ** 3 * (peg_pe / pe_ratio), 2)
+    else:
+        short_term_price = round(eps * (1 + eps_growth) * peg_pe, 2)
+        medium_term_price = round(eps * (1 + eps_growth) ** 2 * peg_pe, 2)
+        long_term_price = round(eps * (1 + eps_growth) ** 3 * peg_pe, 2)
+
+    # Buy at a discount, sell at premium
+    target_buy_price = round(current_implied * 0.88, 2)
+    target_sell_price = round(current_implied * 1.15, 2)
+
+    return {
+        "short_term_price": short_term_price,
+        "medium_term_price": medium_term_price,
+        "long_term_price": long_term_price,
+        "target_buy_price": target_buy_price,
+        "target_sell_price": target_sell_price,
     }
