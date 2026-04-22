@@ -128,6 +128,8 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
     3. Gross Margin Trends - suggests pricing power and scalability
     4. Operating Leverage - demonstrates business model efficiency
     5. Market Share Dynamics - indicates competitive position
+
+    增长率取值优先级：metrics.revenue_growth（已fallback）-> revenue_growth_quarterly -> 自行计算
     """
     score = 0
     details = []
@@ -135,22 +137,23 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
     if not metrics or not financial_line_items:
         return {"score": 0, "details": "Insufficient data to analyze disruptive potential"}
 
-    # 1. Revenue Growth Analysis - Check for accelerating growth
-    revenues = [item.revenue for item in financial_line_items if item.revenue]
-    if len(revenues) >= 3:  # Need at least 3 periods to check acceleration
-        growth_rates = []
-        for i in range(len(revenues) - 1):
-            if revenues[i] and revenues[i + 1]:
-                growth_rate = (revenues[i] - revenues[i + 1]) / abs(revenues[i + 1]) if revenues[i + 1] != 0 else 0
-                growth_rates.append(growth_rate)
+    # 获取最新 metrics 中的稳定增长率
+    latest_metrics = metrics[0] if metrics else None
+    revenue_cagr_3y = getattr(latest_metrics, 'revenue_cagr_3y', None) if latest_metrics else None
 
-        # Check if growth is accelerating (first growth rate higher than last, since they're in reverse order)
-        if len(growth_rates) >= 2 and growth_rates[0] > growth_rates[-1]:
+    # 1. Revenue Growth Analysis - 优先使用 metrics 中已 fallback 的稳定值
+    stable_rev_growth = None
+    if latest_metrics:
+        stable_rev_growth = latest_metrics.revenue_growth or latest_metrics.revenue_growth_quarterly
+
+    if stable_rev_growth is not None:
+        # 使用 metrics 中的稳定增长率
+        latest_growth = stable_rev_growth
+        # 检查是否有加速增长（使用3年CAGR对比最新YoY）
+        if revenue_cagr_3y is not None and latest_growth > revenue_cagr_3y:
             score += 2
-            details.append(f"Revenue growth is accelerating: {(growth_rates[0]*100):.1f}% vs {(growth_rates[-1]*100):.1f}%")
+            details.append(f"Revenue growth is accelerating: {(latest_growth*100):.1f}% YoY vs {(revenue_cagr_3y*100):.1f}% 3Y CAGR")
 
-        # Check absolute growth rate (most recent growth rate is at index 0)
-        latest_growth = growth_rates[0] if growth_rates else 0
         if latest_growth > 1.0:
             score += 3
             details.append(f"Exceptional revenue growth: {(latest_growth*100):.1f}%")
@@ -161,7 +164,35 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
             score += 1
             details.append(f"Moderate revenue growth: {(latest_growth*100):.1f}%")
     else:
-        details.append("Insufficient revenue data for growth analysis")
+        # Fallback: 自行从 line_items 计算增长率
+        revenues = [item.revenue for item in financial_line_items if item.revenue]
+        if len(revenues) >= 3:
+            growth_rates = []
+            for i in range(len(revenues) - 1):
+                if revenues[i] and revenues[i + 1]:
+                    growth_rate = (revenues[i] - revenues[i + 1]) / abs(revenues[i + 1]) if revenues[i + 1] != 0 else 0
+                    growth_rates.append(growth_rate)
+
+            if len(growth_rates) >= 2 and growth_rates[0] > growth_rates[-1]:
+                score += 2
+                details.append(f"Revenue growth is accelerating: {(growth_rates[0]*100):.1f}% vs {(growth_rates[-1]*100):.1f}%")
+
+            latest_growth = growth_rates[0] if growth_rates else 0
+            if latest_growth > 1.0:
+                score += 3
+                details.append(f"Exceptional revenue growth: {(latest_growth*100):.1f}%")
+            elif latest_growth > 0.5:
+                score += 2
+                details.append(f"Strong revenue growth: {(latest_growth*100):.1f}%")
+            elif latest_growth > 0.2:
+                score += 1
+                details.append(f"Moderate revenue growth: {(latest_growth*100):.1f}%")
+        else:
+            details.append("Insufficient revenue data for growth analysis")
+
+    # 补充3年CAGR信息
+    if revenue_cagr_3y is not None:
+        details.append(f"Revenue 3Y CAGR: {(revenue_cagr_3y*100):.1f}%")
 
     # 2. Gross Margin Analysis - Check for expanding margins
     gross_margins = [item.gross_margin for item in financial_line_items if hasattr(item, "gross_margin") and item.gross_margin is not None]
@@ -215,7 +246,7 @@ def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> d
     max_possible_score = 12  # Sum of all possible points
     normalized_score = (score / max_possible_score) * 5
 
-    return {"score": normalized_score, "details": "; ".join(details), "raw_score": score, "max_score": max_possible_score}
+    return {"score": normalized_score, "details": "; ".join(details), "raw_score": score, "max_score": max_possible_score, "data_caliber": "基于最新年报数据，季报同比作为补充参考"}
 
 
 def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict:
@@ -227,12 +258,19 @@ def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict
     3. Operating Efficiency - shows scalability of innovation
     4. Capital Allocation - reveals innovation-focused management
     5. Growth Reinvestment - demonstrates commitment to future growth
+
+    增长率补充：revenue_cagr_3y / earnings_cagr_3y 作为长期增长参考
     """
     score = 0
     details = []
 
     if not metrics or not financial_line_items:
         return {"score": 0, "details": "Insufficient data to analyze innovation-driven growth"}
+
+    # 获取最新 metrics 中的 CAGR 补充数据
+    latest_metrics = metrics[0] if metrics else None
+    revenue_cagr_3y = getattr(latest_metrics, 'revenue_cagr_3y', None) if latest_metrics else None
+    earnings_cagr_3y = getattr(latest_metrics, 'earnings_cagr_3y', None) if latest_metrics else None
 
     # 1. R&D Investment Trends
     rd_expenses = [item.research_and_development for item in financial_line_items if hasattr(item, "research_and_development") and item.research_and_development]
@@ -323,7 +361,16 @@ def analyze_innovation_growth(metrics: list, financial_line_items: list) -> dict
     max_possible_score = 15  # Sum of all possible points
     normalized_score = (score / max_possible_score) * 5
 
-    return {"score": normalized_score, "details": "; ".join(details), "raw_score": score, "max_score": max_possible_score}
+    result = {"score": normalized_score, "details": "; ".join(details), "raw_score": score, "max_score": max_possible_score}
+    # 补充3年CAGR供LLM参考
+    if revenue_cagr_3y is not None:
+        details.append(f"Revenue 3Y CAGR: {(revenue_cagr_3y*100):.1f}%")
+        result["revenue_cagr_3y"] = revenue_cagr_3y
+    if earnings_cagr_3y is not None:
+        details.append(f"Earnings 3Y CAGR: {(earnings_cagr_3y*100):.1f}%")
+        result["earnings_cagr_3y"] = earnings_cagr_3y
+    result["data_caliber"] = "基于最新年报数据，季报同比作为补充参考"
+    return result
 
 
 def analyze_cathie_wood_valuation(financial_line_items: list, market_cap: float) -> dict:

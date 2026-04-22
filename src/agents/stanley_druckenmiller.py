@@ -93,7 +93,7 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
         prices = get_prices(ticker, start_date=start_date, end_date=end_date, api_key=api_key)
 
         progress.update_status(agent_id, ticker, "Analyzing growth & momentum")
-        growth_momentum_analysis = analyze_growth_and_momentum(financial_line_items, prices)
+        growth_momentum_analysis = analyze_growth_and_momentum(financial_line_items, prices, metrics)
 
         progress.update_status(agent_id, ticker, "Analyzing sentiment")
         sentiment_analysis = analyze_sentiment(company_news)
@@ -178,12 +178,17 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
     return {"messages": [message], "data": state["data"]}
 
 
-def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dict:
+def analyze_growth_and_momentum(financial_line_items: list, prices: list, financial_metrics: list = None) -> dict:
     """
     Evaluate:
       - Revenue Growth (YoY)
       - EPS Growth (YoY)
       - Price Momentum
+
+    增长率取值优先级：
+    1. metrics.revenue_growth（年报YoY，数据层已做fallback）-> metrics.revenue_growth_quarterly（季报同比）
+    2. 自行从line_items计算CAGR（仅当metrics不可用时）
+    3. revenue_cagr_3y 作为长期增长补充参考
     """
     if not financial_line_items or len(financial_line_items) < 2:
         return {"score": 0, "details": "Insufficient financial data for growth analysis"}
@@ -191,60 +196,110 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dic
     details = []
     raw_score = 0  # We'll sum up a maximum of 9 raw points, then scale to 0–10
 
-    #
-    # 1. Revenue Growth (annualized CAGR)
-    #
-    revenues = [fi.revenue for fi in financial_line_items if fi.revenue is not None]
-    if len(revenues) >= 2:
-        latest_rev = revenues[0]
-        older_rev = revenues[-1]
-        num_years = len(revenues) - 1
-        if older_rev > 0 and latest_rev > 0:
-            # CAGR formula: (ending_value/beginning_value)^(1/years) - 1
-            rev_growth = (latest_rev / older_rev) ** (1 / num_years) - 1
-            if rev_growth > 0.08:  # 8% annualized (adjusted for CAGR)
-                raw_score += 3
-                details.append(f"Strong annualized revenue growth: {rev_growth:.1%}")
-            elif rev_growth > 0.04:  # 4% annualized
-                raw_score += 2
-                details.append(f"Moderate annualized revenue growth: {rev_growth:.1%}")
-            elif rev_growth > 0.01:  # 1% annualized
-                raw_score += 1
-                details.append(f"Slight annualized revenue growth: {rev_growth:.1%}")
-            else:
-                details.append(f"Minimal/negative revenue growth: {rev_growth:.1%}")
-        else:
-            details.append("Older revenue is zero/negative; can't compute revenue growth.")
-    else:
-        details.append("Not enough revenue data points for growth calculation.")
+    # 获取最新 metrics 中的稳定增长率（优先级最高的数据源）
+    latest_metrics = financial_metrics[0] if financial_metrics else None
 
     #
-    # 2. EPS Growth (annualized CAGR)
+    # 1. Revenue Growth
+    # 优先使用 metrics 中已 fallback 的稳定值，其次自行计算 CAGR
     #
-    eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
-    if len(eps_values) >= 2:
-        latest_eps = eps_values[0]
-        older_eps = eps_values[-1]
-        num_years = len(eps_values) - 1
-        # Calculate CAGR for positive EPS values
-        if older_eps > 0 and latest_eps > 0:
-            # CAGR formula for EPS
-            eps_growth = (latest_eps / older_eps) ** (1 / num_years) - 1
-            if eps_growth > 0.08:  # 8% annualized (adjusted for CAGR)
-                raw_score += 3
-                details.append(f"Strong annualized EPS growth: {eps_growth:.1%}")
-            elif eps_growth > 0.04:  # 4% annualized
-                raw_score += 2
-                details.append(f"Moderate annualized EPS growth: {eps_growth:.1%}")
-            elif eps_growth > 0.01:  # 1% annualized
-                raw_score += 1
-                details.append(f"Slight annualized EPS growth: {eps_growth:.1%}")
-            else:
-                details.append(f"Minimal/negative annualized EPS growth: {eps_growth:.1%}")
+    rev_growth_rate = None
+    revenue_cagr_3y = None
+    if latest_metrics:
+        rev_growth_rate = latest_metrics.revenue_growth or latest_metrics.revenue_growth_quarterly
+        revenue_cagr_3y = getattr(latest_metrics, 'revenue_cagr_3y', None)
+
+    if rev_growth_rate is not None:
+        # 使用 metrics 中的稳定增长率（年报YoY优先，季报同比作为fallback）
+        if rev_growth_rate > 0.08:
+            raw_score += 3
+            details.append(f"Strong revenue growth: {rev_growth_rate:.1%}")
+        elif rev_growth_rate > 0.04:
+            raw_score += 2
+            details.append(f"Moderate revenue growth: {rev_growth_rate:.1%}")
+        elif rev_growth_rate > 0.01:
+            raw_score += 1
+            details.append(f"Slight revenue growth: {rev_growth_rate:.1%}")
         else:
-            details.append("Older EPS is near zero; skipping EPS growth calculation.")
+            details.append(f"Minimal/negative revenue growth: {rev_growth_rate:.1%}")
+        # 补充3年CAGR信息
+        if revenue_cagr_3y is not None:
+            details.append(f"Revenue 3Y CAGR: {revenue_cagr_3y:.1%}")
     else:
-        details.append("Not enough EPS data points for growth calculation.")
+        # Fallback: 自行从 line_items 计算年化 CAGR
+        revenues = [fi.revenue for fi in financial_line_items if fi.revenue is not None]
+        if len(revenues) >= 2:
+            latest_rev = revenues[0]
+            older_rev = revenues[-1]
+            num_years = len(revenues) - 1
+            if older_rev > 0 and latest_rev > 0:
+                # CAGR formula: (ending_value/beginning_value)^(1/years) - 1
+                rev_growth = (latest_rev / older_rev) ** (1 / num_years) - 1
+                if rev_growth > 0.08:
+                    raw_score += 3
+                    details.append(f"Strong annualized revenue growth: {rev_growth:.1%}")
+                elif rev_growth > 0.04:
+                    raw_score += 2
+                    details.append(f"Moderate annualized revenue growth: {rev_growth:.1%}")
+                elif rev_growth > 0.01:
+                    raw_score += 1
+                    details.append(f"Slight annualized revenue growth: {rev_growth:.1%}")
+                else:
+                    details.append(f"Minimal/negative revenue growth: {rev_growth:.1%}")
+            else:
+                details.append("Older revenue is zero/negative; can't compute revenue growth.")
+        else:
+            details.append("Not enough revenue data points for growth calculation.")
+
+    #
+    # 2. EPS Growth
+    # 优先使用 metrics 中已 fallback 的稳定值，其次自行计算 CAGR
+    #
+    eps_growth_rate = None
+    earnings_cagr_3y = None
+    if latest_metrics:
+        eps_growth_rate = latest_metrics.earnings_growth or latest_metrics.earnings_growth_quarterly
+        earnings_cagr_3y = getattr(latest_metrics, 'earnings_cagr_3y', None)
+
+    if eps_growth_rate is not None:
+        if eps_growth_rate > 0.08:
+            raw_score += 3
+            details.append(f"Strong EPS growth: {eps_growth_rate:.1%}")
+        elif eps_growth_rate > 0.04:
+            raw_score += 2
+            details.append(f"Moderate EPS growth: {eps_growth_rate:.1%}")
+        elif eps_growth_rate > 0.01:
+            raw_score += 1
+            details.append(f"Slight EPS growth: {eps_growth_rate:.1%}")
+        else:
+            details.append(f"Minimal/negative EPS growth: {eps_growth_rate:.1%}")
+        # 补充3年CAGR信息
+        if earnings_cagr_3y is not None:
+            details.append(f"Earnings 3Y CAGR: {earnings_cagr_3y:.1%}")
+    else:
+        # Fallback: 自行从 line_items 计算年化 CAGR
+        eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+        if len(eps_values) >= 2:
+            latest_eps = eps_values[0]
+            older_eps = eps_values[-1]
+            num_years = len(eps_values) - 1
+            if older_eps > 0 and latest_eps > 0:
+                eps_growth = (latest_eps / older_eps) ** (1 / num_years) - 1
+                if eps_growth > 0.08:
+                    raw_score += 3
+                    details.append(f"Strong annualized EPS growth: {eps_growth:.1%}")
+                elif eps_growth > 0.04:
+                    raw_score += 2
+                    details.append(f"Moderate annualized EPS growth: {eps_growth:.1%}")
+                elif eps_growth > 0.01:
+                    raw_score += 1
+                    details.append(f"Slight annualized EPS growth: {eps_growth:.1%}")
+                else:
+                    details.append(f"Minimal/negative annualized EPS growth: {eps_growth:.1%}")
+            else:
+                details.append("Older EPS is near zero; skipping EPS growth calculation.")
+        else:
+            details.append("Not enough EPS data points for growth calculation.")
 
     #
     # 3. Price Momentum
@@ -282,7 +337,14 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list) -> dic
     # Scale to 0–10
     final_score = min(10, (raw_score / 9) * 10)
 
-    return {"score": final_score, "details": "; ".join(details)}
+    result = {"score": final_score, "details": "; ".join(details)}
+    # 补充3年CAGR供LLM参考
+    if revenue_cagr_3y is not None:
+        result["revenue_cagr_3y"] = revenue_cagr_3y
+    if earnings_cagr_3y is not None:
+        result["earnings_cagr_3y"] = earnings_cagr_3y
+    result["data_caliber"] = "基于最新年报数据，季报同比作为补充参考"
+    return result
 
 
 def analyze_insider_activity(insider_trades: list) -> dict:

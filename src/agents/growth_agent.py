@@ -175,9 +175,16 @@ def _calculate_trend(data: list[float | None]) -> float:
         return 0.0
 
 def analyze_growth_trends(metrics: list) -> dict:
-    """Analyzes historical growth trends."""
+    """Analyzes historical growth trends.
     
-    rev_growth = [m.revenue_growth for m in metrics]
+    增长率取值优先级：
+    1. revenue_growth（年报YoY，数据层已做fallback：AKShare原始值 -> 衍生年报YoY -> 季报同比）
+    2. revenue_growth_quarterly（季报同比，作为补充fallback）
+    3. None（数据不可用）
+    """
+    
+    # 构建营收增长率序列：优先用 revenue_growth，fallback 到 revenue_growth_quarterly
+    rev_growth = [m.revenue_growth or m.revenue_growth_quarterly for m in metrics]
     eps_growth = [m.earnings_per_share_growth for m in metrics]
     fcf_growth = [m.free_cash_flow_growth for m in metrics]
 
@@ -213,6 +220,11 @@ def analyze_growth_trends(metrics: list) -> dict:
             
     score = min(score, 1.0)
 
+    # 补充3年CAGR数据（来自最新一期 metrics）
+    latest = metrics[0] if metrics else None
+    revenue_cagr_3y = getattr(latest, 'revenue_cagr_3y', None) if latest else None
+    earnings_cagr_3y = getattr(latest, 'earnings_cagr_3y', None) if latest else None
+
     return {
         "score": score,
         "revenue_growth": rev_growth[0],
@@ -220,7 +232,10 @@ def analyze_growth_trends(metrics: list) -> dict:
         "eps_growth": eps_growth[0],
         "eps_trend": eps_trend,
         "fcf_growth": fcf_growth[0],
-        "fcf_trend": fcf_trend
+        "fcf_trend": fcf_trend,
+        "revenue_cagr_3y": revenue_cagr_3y,
+        "earnings_cagr_3y": earnings_cagr_3y,
+        "data_caliber": "基于最新年报数据，季报同比作为补充参考",
     }
 
 def analyze_valuation(metrics) -> dict:
@@ -370,7 +385,8 @@ def calculate_growth_price_targets(metrics, growth_trends: dict, signal: str, cu
         implied_price = eps * pe_ratio
         revenue_per_share = implied_price / ps_ratio if ps_ratio > 0 else None
 
-    rev_growth = growth_trends.get("revenue_growth") or 0.10
+    # 增长率取值优先级：revenue_growth（年报YoY，已fallback）-> revenue_cagr_3y -> 季报同比 -> 默认10%
+    rev_growth = growth_trends.get("revenue_growth") or growth_trends.get("revenue_cagr_3y") or 0.10
     eps_growth = growth_trends.get("eps_growth") or rev_growth
 
     if not eps or not pe_ratio or eps <= 0 or pe_ratio <= 0:

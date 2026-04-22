@@ -55,6 +55,15 @@ class FinancialMetrics(BaseModel):
     free_cash_flow_growth: float | None
     operating_income_growth: float | None
     ebitda_growth: float | None
+
+    # 季报同比增长率
+    revenue_growth_quarterly: float | None = None       # 最新季报营收同比增长率
+    earnings_growth_quarterly: float | None = None      # 最新季报净利润同比增长率
+
+    # 3年复合增长率 (CAGR)
+    revenue_cagr_3y: float | None = None               # 营收3年CAGR
+    earnings_cagr_3y: float | None = None              # 净利润3年CAGR
+
     payout_ratio: float | None
     earnings_per_share: float | None
     book_value_per_share: float | None

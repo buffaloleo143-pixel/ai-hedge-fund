@@ -275,9 +275,183 @@ def _get_valuation_from_tencent(symbol: str) -> dict:
         return {}
 
 
-def _compute_derived_metrics(symbol: str, end_date: str, market_cap: float = None, current_price: float = None) -> dict:
-    """从三大报表数据计算衍生财务指标"""
+def _compute_cagr(values: list, years: int) -> float | None:
+    """
+    计算复合年增长率 CAGR = (最新值/最早值)^(1/years) - 1
+
+    Args:
+        values: 按时间从新到旧排列的数值列表（至少需要 2 个非 None 值）
+        years: 最早值与最新值之间的年数
+
+    Returns:
+        CAGR 值，或 None（数据不足 / 除零 / 负数开方等异常）
+    """
     try:
+        # 过滤 None，保留有效值
+        valid = [v for v in values if v is not None]
+        if len(valid) < 2 or years <= 0:
+            return None
+        latest = float(valid[0])
+        earliest = float(valid[-1])
+        if earliest == 0:
+            return None
+        # 两者同号才能计算有意义的 CAGR
+        if earliest < 0 and latest < 0:
+            # 都是负数时，用绝对值比计算增长率
+            ratio = abs(latest) / abs(earliest)
+        elif earliest > 0 and latest > 0:
+            ratio = latest / earliest
+        elif latest == 0:
+            return -1.0  # 从正值降到 0
+        else:
+            # 一正一负，CAGR 无意义
+            return None
+        cagr = ratio ** (1.0 / years) - 1.0
+        return cagr
+    except (ValueError, TypeError, ZeroDivisionError, OverflowError):
+        return None
+
+
+def _compute_quarterly_growth(ticker: str) -> dict:
+    """
+    计算季报同比增长率（如 2025Q1 vs 2024Q1）。
+
+    使用 AKShare 的 stock_financial_report_sina 获取季度利润表，
+    比较最新季报与去年同期的营收和净利润。
+
+    Returns:
+        dict 包含:
+        - revenue_growth_quarterly: 季报营收同比增长率
+        - earnings_growth_quarterly: 季报净利润同比增长率
+        获取失败时对应值为 None
+    """
+    result = {
+        "revenue_growth_quarterly": None,
+        "earnings_growth_quarterly": None,
+    }
+    try:
+        symbol = _clean_ticker(ticker)
+
+        # 获取季度利润表
+        df = AKShareRateLimiter.call_with_retry(
+            ak.stock_financial_report_sina,
+            stock=symbol,
+            symbol="利润表",
+        )
+        if df is None or df.empty:
+            logger.warning(f"Quarterly growth: no income statement for {ticker}")
+            return result
+
+        # 识别日期列
+        date_col = None
+        for col in ("报告日", "日期", "截止日期", "报告期"):
+            if col in df.columns:
+                date_col = col
+                break
+        if date_col is None:
+            logger.warning(f"Quarterly growth: no date column in income statement for {ticker}")
+            return result
+
+        # 识别营收和净利润列
+        revenue_col = None
+        for col_name in ("营业收入", "营业总收入"):
+            if col_name in df.columns:
+                revenue_col = col_name
+                break
+
+        net_income_col = None
+        for col_name in ("净利润", "归属于母公司所有者的净利润"):
+            if col_name in df.columns:
+                net_income_col = col_name
+                break
+
+        if revenue_col is None and net_income_col is None:
+            logger.warning(f"Quarterly growth: no revenue/net_income columns for {ticker}")
+            return result
+
+        # 提取日期和季度信息，按日期降序排列
+        df["_report_date"] = df[date_col].astype(str).str[:10]
+        df = df.sort_values("_report_date", ascending=False)
+
+        # 解析季度：日期格式如 "2024-03-31" -> Q1, "2024-06-30" -> Q2, etc.
+        def _parse_quarter(date_str: str) -> tuple[int, int] | None:
+            """从报告期日期解析年份和季度，返回 (year, quarter) 或 None"""
+            try:
+                parts = date_str.split("-")
+                month = int(parts[1])
+                year = int(parts[0])
+                if month <= 3:
+                    return (year, 1)
+                elif month <= 6:
+                    return (year, 2)
+                elif month <= 9:
+                    return (year, 3)
+                else:
+                    return (year, 4)
+            except (ValueError, IndexError):
+                return None
+
+        # 构建季报数据字典: (year, quarter) -> {revenue, net_income}
+        quarterly_data = {}
+        for _, row in df.iterrows():
+            date_str = row["_report_date"]
+            yq = _parse_quarter(date_str)
+            if yq is None:
+                continue
+            if yq in quarterly_data:
+                continue  # 取第一条（最新的来源）
+            entry = {}
+            if revenue_col and revenue_col in row.index:
+                entry["revenue"] = _safe_float(row[revenue_col])
+            if net_income_col and net_income_col in row.index:
+                entry["net_income"] = _safe_float(row[net_income_col])
+            quarterly_data[yq] = entry
+
+        if not quarterly_data:
+            return result
+
+        # 找到最新的季度
+        sorted_quarters = sorted(quarterly_data.keys(), reverse=True)
+        latest_yq = sorted_quarters[0]
+        prev_yq = (latest_yq[0] - 1, latest_yq[1])  # 去年同期
+
+        if prev_yq not in quarterly_data:
+            logger.info(f"Quarterly growth: no YoY data for {ticker}, latest={latest_yq}, need={prev_yq}")
+            return result
+
+        latest_data = quarterly_data[latest_yq]
+        prev_data = quarterly_data[prev_yq]
+
+        # 计算营收同比增长
+        if "revenue" in latest_data and "revenue" in prev_data:
+            rev_new = latest_data["revenue"]
+            rev_old = prev_data["revenue"]
+            if rev_new is not None and rev_old is not None and rev_old != 0:
+                result["revenue_growth_quarterly"] = (rev_new - rev_old) / abs(rev_old)
+
+        # 计算净利润同比增长
+        if "net_income" in latest_data and "net_income" in prev_data:
+            ni_new = latest_data["net_income"]
+            ni_old = prev_data["net_income"]
+            if ni_new is not None and ni_old is not None and ni_old != 0:
+                result["earnings_growth_quarterly"] = (ni_new - ni_old) / abs(ni_old)
+
+        logger.info(
+            f"Quarterly growth for {ticker}: latest={latest_yq}, "
+            f"revenue_growth={result['revenue_growth_quarterly']}, "
+            f"earnings_growth={result['earnings_growth_quarterly']}"
+        )
+        return result
+
+    except Exception as e:
+        logger.warning(f"Quarterly growth computation failed for {ticker}: {e}")
+        return result
+
+
+def _compute_derived_metrics(symbol: str, end_date: str, market_cap: float = None, current_price: float = None) -> dict:
+    """从三大报表数据计算衍生财务指标（支持多期增长率与 CAGR）"""
+    try:
+        # 获取 5 期年报数据，用于多期增长率和 CAGR 计算
         items = search_line_items_ak(symbol, [
             "total_revenue", "cost_of_revenue", "operating_income", "net_income",
             "total_assets", "total_liabilities", "total_equity",
@@ -285,8 +459,8 @@ def _compute_derived_metrics(symbol: str, end_date: str, market_cap: float = Non
             "cash_and_equivalents", "inventory", "accounts_receivable",
             "operating_cash_flow", "interest_expense",
             "short_term_debt", "long_term_debt",
-            "paid_in_capital"
-        ], end_date, "annual", 2)
+            "paid_in_capital", "depreciation_and_amortization"
+        ], end_date, "annual", 5)
 
         if not items:
             return {}
@@ -318,6 +492,7 @@ def _compute_derived_metrics(symbol: str, end_date: str, market_cap: float = Non
         short_term_debt = get_val(latest, "short_term_debt") or 0
         long_term_debt = get_val(latest, "long_term_debt") or 0
         paid_in_capital = get_val(latest, "paid_in_capital")
+        depreciation = get_val(latest, "depreciation_and_amortization")
 
         # 如果 total_equity 不可直接获取，从总资产减总负债推算
         if total_equity is None and total_assets and total_liabilities:
@@ -442,49 +617,110 @@ def _compute_derived_metrics(symbol: str, end_date: str, market_cap: float = Non
         if operating_income and invested_capital != 0:
             result["return_on_invested_capital"] = operating_income / invested_capital
 
-        # 增长率计算（需要两期数据）
+        # ====== 多期增长率计算 ======
+        # 收集各期的关键指标值（从新到旧）
+        revenues_list = []
+        net_incomes_list = []
+        operating_incomes_list = []
+        equities_list = []
+        eps_list = []
+        ebitda_list = []
+
+        # 用于 EPS 计算的股数推算
+        base_shares = None
+        if paid_in_capital and paid_in_capital != 0:
+            base_shares = paid_in_capital * 1e4
+        elif market_cap and current_price and current_price != 0:
+            base_shares = market_cap / current_price
+
+        for item in items:
+            rev = get_val(item, "total_revenue")
+            ni = get_val(item, "net_income")
+            oi = get_val(item, "operating_income")
+            eq = get_val(item, "total_equity")
+            if eq is None:
+                ta = get_val(item, "total_assets")
+                tl = get_val(item, "total_liabilities")
+                if ta and tl:
+                    eq = ta - tl
+            dep = get_val(item, "depreciation_and_amortization")
+
+            revenues_list.append(rev)
+            net_incomes_list.append(ni)
+            operating_incomes_list.append(oi)
+            equities_list.append(eq)
+
+            # EPS
+            if ni and base_shares and base_shares != 0:
+                eps_list.append(ni / base_shares)
+            else:
+                eps_list.append(None)
+
+            # EBITDA = 营业利润 + 折旧摊销
+            if oi is not None:
+                ebitda_val = oi + (dep if dep else 0)
+                ebitda_list.append(ebitda_val)
+            else:
+                ebitda_list.append(None)
+
+        # --- YoY 增长率：多级 fallback ---
+        # revenue_growth: 优先从第2期 YoY，否则从第3期 fallback
+        if total_revenue and len(revenues_list) >= 2 and revenues_list[1] and revenues_list[1] != 0:
+            result["revenue_growth"] = (total_revenue - revenues_list[1]) / abs(revenues_list[1])
+        elif total_revenue and len(revenues_list) >= 3 and revenues_list[2] and revenues_list[2] != 0:
+            # fallback: 用第3期做 2 年 CAGR 并近似为 YoY
+            result["revenue_growth"] = _compute_cagr(revenues_list[:3], 2)
+
+        # earnings_growth / net_income_growth
+        if net_income and len(net_incomes_list) >= 2 and net_incomes_list[1] and net_incomes_list[1] != 0:
+            result["earnings_growth"] = (net_income - net_incomes_list[1]) / abs(net_incomes_list[1])
+        elif net_income and len(net_incomes_list) >= 3 and net_incomes_list[2] and net_incomes_list[2] != 0:
+            result["earnings_growth"] = _compute_cagr(net_incomes_list[:3], 2)
+
+        # operating_income_growth
+        if operating_income and len(operating_incomes_list) >= 2 and operating_incomes_list[1] and operating_incomes_list[1] != 0:
+            result["operating_income_growth"] = (operating_income - operating_incomes_list[1]) / abs(operating_incomes_list[1])
+        elif operating_income and len(operating_incomes_list) >= 3 and operating_incomes_list[2] and operating_incomes_list[2] != 0:
+            result["operating_income_growth"] = _compute_cagr(operating_incomes_list[:3], 2)
+
+        # ebitda_growth
+        if len(ebitda_list) >= 2 and ebitda_list[0] and ebitda_list[1] and ebitda_list[1] != 0:
+            result["ebitda_growth"] = (ebitda_list[0] - ebitda_list[1]) / abs(ebitda_list[1])
+        elif len(ebitda_list) >= 3 and ebitda_list[0] and ebitda_list[2] and ebitda_list[2] != 0:
+            result["ebitda_growth"] = _compute_cagr(ebitda_list[:3], 2)
+
+        # book_value_growth
+        if total_equity and len(equities_list) >= 2 and equities_list[1] and equities_list[1] != 0:
+            result["book_value_growth"] = (total_equity - equities_list[1]) / abs(equities_list[1])
+        elif total_equity and len(equities_list) >= 3 and equities_list[2] and equities_list[2] != 0:
+            result["book_value_growth"] = _compute_cagr(equities_list[:3], 2)
+
+        # earnings_per_share_growth
+        if len(eps_list) >= 2 and eps_list[0] and eps_list[1] and eps_list[1] != 0:
+            result["earnings_per_share_growth"] = (eps_list[0] - eps_list[1]) / abs(eps_list[1])
+        elif len(eps_list) >= 3 and eps_list[0] and eps_list[2] and eps_list[2] != 0:
+            result["earnings_per_share_growth"] = _compute_cagr(eps_list[:3], 2)
+
+        # free_cash_flow_growth（仍使用 2 期数据）
         if len(items) >= 2:
-            prev = items[1]
-            prev_equity = get_val(prev, "total_equity")
-            # 如果 prev_equity 不可直接获取，从总资产减总负债推算
-            if prev_equity is None:
-                prev_assets = get_val(prev, "total_assets")
-                prev_liabilities = get_val(prev, "total_liabilities")
-                if prev_assets and prev_liabilities:
-                    prev_equity = prev_assets - prev_liabilities
-            prev_operating_income = get_val(prev, "operating_income")
-            prev_net_income = get_val(prev, "net_income")
-            prev_ocf = get_val(prev, "operating_cash_flow")
-            prev_revenue = get_val(prev, "total_revenue")
-
-            if total_equity and prev_equity and prev_equity != 0:
-                result["book_value_growth"] = (total_equity - prev_equity) / abs(prev_equity)
-
-            if operating_income and prev_operating_income and prev_operating_income != 0:
-                result["operating_income_growth"] = (operating_income - prev_operating_income) / abs(prev_operating_income)
-
+            prev_ocf = get_val(items[1], "operating_cash_flow")
             if operating_cash_flow and prev_ocf and prev_ocf != 0:
                 result["free_cash_flow_growth"] = (operating_cash_flow - prev_ocf) / abs(prev_ocf)
 
-            # revenue_growth
-            if total_revenue and prev_revenue and prev_revenue != 0:
-                result["revenue_growth"] = (total_revenue - prev_revenue) / abs(prev_revenue)
+        # ====== 3 年 CAGR ======
+        if len(revenues_list) >= 4 and revenues_list[0] is not None and revenues_list[3] is not None:
+            result["revenue_cagr_3y"] = _compute_cagr(revenues_list[:4], 3)
+        elif len(revenues_list) >= 2 and revenues_list[0] is not None and revenues_list[-1] is not None:
+            years_span = len([v for v in revenues_list if v is not None]) - 1
+            if years_span >= 2:
+                result["revenue_cagr_3y"] = _compute_cagr(revenues_list, years_span)
 
-            # earnings_growth
-            if net_income and prev_net_income and prev_net_income != 0:
-                result["earnings_growth"] = (net_income - prev_net_income) / abs(prev_net_income)
-
-            # earnings_per_share_growth (如果两期EPS都可计算)
-            latest_shares = None
-            if paid_in_capital and paid_in_capital != 0:
-                latest_shares = paid_in_capital * 1e4
-            elif market_cap and current_price and current_price != 0:
-                latest_shares = market_cap / current_price
-            if latest_shares and latest_shares != 0:
-                latest_eps = net_income / latest_shares if net_income else None
-                prev_eps = prev_net_income / latest_shares if prev_net_income else None
-                if latest_eps and prev_eps and prev_eps != 0:
-                    result["earnings_per_share_growth"] = (latest_eps - prev_eps) / abs(prev_eps)
+        if len(net_incomes_list) >= 4 and net_incomes_list[0] is not None and net_incomes_list[3] is not None:
+            result["earnings_cagr_3y"] = _compute_cagr(net_incomes_list[:4], 3)
+        elif len(net_incomes_list) >= 2 and net_incomes_list[0] is not None and net_incomes_list[-1] is not None:
+            years_span = len([v for v in net_incomes_list if v is not None]) - 1
+            if years_span >= 2:
+                result["earnings_cagr_3y"] = _compute_cagr(net_incomes_list, years_span)
 
         return result
     except Exception as e:
@@ -651,6 +887,32 @@ _FIN_METRICS_COLUMN_MAP = {
 }
 
 
+def _format_report_period(report_date: str) -> str:
+    """将报告日期转换为带数据来源标记的格式，如 '2024-annual' 或 '2025-Q1'。
+
+    根据 report_date 中的月份判断报告类型：
+    - 12月 → annual（年报）
+    - 3月  → Q1（一季报）
+    - 6月  → Q2（半年报）
+    - 9月  → Q3（三季报）
+    """
+    try:
+        month = int(report_date[5:7])
+        year = report_date[:4]
+        if month == 12:
+            return f"{year}-annual"
+        elif month <= 3:
+            return f"{year}-Q1"
+        elif month <= 6:
+            return f"{year}-Q2"
+        elif month <= 9:
+            return f"{year}-Q3"
+        else:
+            return f"{year}-annual"
+    except (ValueError, IndexError):
+        return report_date
+
+
 def get_financial_metrics_ak(
     ticker: str,
     end_date: str,
@@ -769,11 +1031,16 @@ def get_financial_metrics_ak(
                     metric.market_cap = valuation["market_cap"]
 
             # 对前 2-3 个 metric 做衍生计算，避免重复调用 API
+            first_derived: dict = {}  # 保存第一个 metric 的衍生值，用于增长率 fallback
             for idx, metric in enumerate(results[:3]):
                 report_date = metric.report_period or end_date
                 mc = metric.market_cap or valuation.get("market_cap")
                 cp = valuation.get("current_price")
                 derived = _compute_derived_metrics(symbol, report_date, market_cap=mc, current_price=cp)
+
+                # 保存第一个 metric 的衍生计算结果，用于后续增长率 fallback
+                if idx == 0:
+                    first_derived = derived
 
                 for field, value in derived.items():
                     if hasattr(metric, field) and getattr(metric, field) is None and value is not None:
@@ -783,6 +1050,37 @@ def get_financial_metrics_ak(
                 if metric.peg_ratio is None and metric.price_to_earnings_ratio and metric.earnings_growth:
                     if metric.earnings_growth > 0:
                         metric.peg_ratio = metric.price_to_earnings_ratio / (metric.earnings_growth * 100)
+
+            # 补充季报同比增长率（只需对第一个 metric 计算）
+            if results:
+                quarterly_growth = _compute_quarterly_growth(ticker)
+                metric = results[0]
+                if metric.revenue_growth_quarterly is None and quarterly_growth.get("revenue_growth_quarterly") is not None:
+                    metric.revenue_growth_quarterly = quarterly_growth["revenue_growth_quarterly"]
+                if metric.earnings_growth_quarterly is None and quarterly_growth.get("earnings_growth_quarterly") is not None:
+                    metric.earnings_growth_quarterly = quarterly_growth["earnings_growth_quarterly"]
+
+            # 增长率 fallback：如果 AKShare 原始增长率为 None，使用衍生计算值填充
+            if results and first_derived:
+                growth_fields = [
+                    'revenue_growth', 'earnings_growth', 'net_income_growth',
+                    'operating_income_growth', 'ebitda_growth',
+                    'book_value_growth', 'earnings_per_share_growth'
+                ]
+                for field in growth_fields:
+                    if not hasattr(results[0], field):
+                        continue
+                    current_val = getattr(results[0], field, None)
+                    derived_val = first_derived.get(field)
+                    if current_val is None and derived_val is not None:
+                        setattr(results[0], field, derived_val)
+                        logger.info(f"Growth fallback for {ticker}: {field} = {derived_val:.4f} (from derived metrics)")
+
+            # 格式化 report_period：将日期标记为年报或季报（如 '2024-annual', '2025-Q1'）
+            # 注意：此步骤放在所有日期相关计算之后，避免影响日期比较逻辑
+            for metric in results:
+                if metric.report_period and "-" in metric.report_period and len(metric.report_period) >= 10:
+                    metric.report_period = _format_report_period(metric.report_period)
 
         return results[:limit]
 

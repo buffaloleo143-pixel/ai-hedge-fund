@@ -83,12 +83,13 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
             wc_change = 0  # Default to 0 if working capital data is unavailable
 
         # Owner Earnings
+        # 增长率取值优先级：earnings_growth（年报YoY，已fallback）-> earnings_growth_quarterly
         owner_val = calculate_owner_earnings_value(
             net_income=li_curr.net_income,
             depreciation=li_curr.depreciation_and_amortization,
             capex=li_curr.capital_expenditure,
             working_capital_change=wc_change,
-            growth_rate=most_recent_metrics.earnings_growth or 0.05,
+            growth_rate=most_recent_metrics.earnings_growth or most_recent_metrics.earnings_growth_quarterly or 0.05,
         )
 
         # Enhanced Discounted Cash Flow with WACC and scenarios
@@ -110,16 +111,17 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
                 fcf_history.append(li.free_cash_flow)
         
         # Enhanced DCF with scenarios
+        # 增长率取值优先级：年报YoY（已fallback）-> 季报同比
         dcf_results = calculate_dcf_scenarios(
             fcf_history=fcf_history,
             growth_metrics={
-                'revenue_growth': most_recent_metrics.revenue_growth,
+                'revenue_growth': most_recent_metrics.revenue_growth or most_recent_metrics.revenue_growth_quarterly,
                 'fcf_growth': most_recent_metrics.free_cash_flow_growth,
-                'earnings_growth': most_recent_metrics.earnings_growth
+                'earnings_growth': most_recent_metrics.earnings_growth or most_recent_metrics.earnings_growth_quarterly
             },
             wacc=wacc,
             market_cap=most_recent_metrics.market_cap or 0,
-            revenue_growth=most_recent_metrics.revenue_growth
+            revenue_growth=most_recent_metrics.revenue_growth or most_recent_metrics.revenue_growth_quarterly
         )
         
         dcf_val = dcf_results['expected_value']
@@ -207,6 +209,16 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
                 "wacc_used": f"{wacc:.1%}",
                 "fcf_periods_analyzed": len(fcf_history)
             }
+
+        # 补充3年CAGR数据供LLM参考
+        cagr_info = {}
+        if most_recent_metrics.revenue_cagr_3y is not None:
+            cagr_info["revenue_cagr_3y"] = f"{most_recent_metrics.revenue_cagr_3y:.2%}"
+        if most_recent_metrics.earnings_cagr_3y is not None:
+            cagr_info["earnings_cagr_3y"] = f"{most_recent_metrics.earnings_cagr_3y:.2%}"
+        if cagr_info:
+            cagr_info["data_caliber"] = "基于最新年报数据，季报同比作为补充参考"
+            reasoning["cagr_reference"] = cagr_info
 
         valuation_analysis[ticker] = {
             "signal": signal,

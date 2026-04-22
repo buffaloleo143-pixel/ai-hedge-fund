@@ -68,8 +68,9 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
 
         progress.update_status(agent_id, ticker, "Analyzing growth")
         # 2. Growth Analysis
-        revenue_growth = metrics.revenue_growth
-        earnings_growth = metrics.earnings_growth
+        # 增长率取值优先级：revenue_growth（年报YoY，已fallback）-> revenue_growth_quarterly（季报同比）
+        revenue_growth = metrics.revenue_growth or metrics.revenue_growth_quarterly
+        earnings_growth = metrics.earnings_growth or metrics.earnings_growth_quarterly
         book_value_growth = metrics.book_value_growth
 
         thresholds = [
@@ -79,10 +80,18 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
         ]
         growth_score = sum(metric is not None and metric > threshold for metric, threshold in thresholds)
 
+        # 补充3年CAGR作为长期增长参考
+        cagr_info = ""
+        if metrics.revenue_cagr_3y is not None:
+            cagr_info += f", Revenue 3Y CAGR: {metrics.revenue_cagr_3y:.2%}"
+        if metrics.earnings_cagr_3y is not None:
+            cagr_info += f", Earnings 3Y CAGR: {metrics.earnings_cagr_3y:.2%}"
+
         signals.append("bullish" if growth_score >= 2 else "bearish" if growth_score == 0 else "neutral")
         reasoning["growth_signal"] = {
             "signal": signals[1],
-            "details": (f"Revenue Growth: {revenue_growth:.2%}" if revenue_growth else "Revenue Growth: N/A") + ", " + (f"Earnings Growth: {earnings_growth:.2%}" if earnings_growth else "Earnings Growth: N/A"),
+            "details": (f"Revenue Growth: {revenue_growth:.2%}" if revenue_growth else "Revenue Growth: N/A") + ", " + (f"Earnings Growth: {earnings_growth:.2%}" if earnings_growth else "Earnings Growth: N/A") + cagr_info,
+            "data_caliber": "基于最新年报数据，季报同比作为补充参考",
         }
 
         progress.update_status(agent_id, ticker, "Analyzing financial health")
@@ -186,8 +195,9 @@ def calculate_fundamental_price_targets(metrics, signal: str, current_price: flo
     """
     eps = getattr(metrics, "earnings_per_share", None)
     pe_ratio = getattr(metrics, "price_to_earnings_ratio", None)
-    revenue_growth = getattr(metrics, "revenue_growth", None)
-    earnings_growth = getattr(metrics, "earnings_growth", None)
+    # 增长率取值优先级：年报YoY（已fallback）-> 季报同比
+    revenue_growth = getattr(metrics, "revenue_growth", None) or getattr(metrics, "revenue_growth_quarterly", None)
+    earnings_growth = getattr(metrics, "earnings_growth", None) or getattr(metrics, "earnings_growth_quarterly", None)
 
     # Cannot estimate without EPS and P/E
     if not eps or not pe_ratio or eps <= 0 or pe_ratio <= 0:

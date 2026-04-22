@@ -14,7 +14,9 @@ from src.tools.api import is_a_share
 from src.tools.akshare_provider import (
     AKShareRateLimiter,
     _clean_ticker,
+    _compute_cagr,
     _compute_derived_metrics,
+    _compute_quarterly_growth,
     _date_to_akshare,
     _get_valuation_from_tencent,
     _safe_float,
@@ -667,3 +669,172 @@ class TestEnhancedFinancialMetrics:
             'enterprise_value', 'price_to_sales_ratio'
         ] if getattr(m, f, None) is not None)
         assert non_none >= 20, f"Only {non_none} fields with value"
+
+
+# ===========================================================================
+# 9. _compute_cagr() 测试
+# ===========================================================================
+
+class TestComputeCAGR:
+    """测试 _compute_cagr() 复合年增长率计算。"""
+
+    def test_basic_cagr(self):
+        """3 年从 100 增长到 200，CAGR ≈ 25.99%"""
+        cagr = _compute_cagr([200, 150, 120, 100], 3)
+        assert cagr is not None
+        assert abs(cagr - 0.2599) < 0.01
+
+    def test_two_values(self):
+        """2 年从 100 到 144，CAGR = 20%"""
+        cagr = _compute_cagr([144, 100], 2)
+        assert cagr is not None
+        assert abs(cagr - 0.2) < 1e-6
+
+    def test_negative_growth(self):
+        """从 100 降到 81，CAGR ≈ -10%"""
+        cagr = _compute_cagr([81, 100], 2)
+        assert cagr is not None
+        assert cagr < 0
+        assert abs(cagr - (-0.1)) < 1e-6
+
+    def test_insufficient_data(self):
+        """数据不足时返回 None"""
+        assert _compute_cagr([100], 1) is None
+        assert _compute_cagr([], 1) is None
+
+    def test_zero_earliest(self):
+        """最早值为 0 时返回 None"""
+        assert _compute_cagr([100, 0], 2) is None
+
+    def test_none_values_skipped(self):
+        """None 值被跳过"""
+        cagr = _compute_cagr([200, None, None, 100], 3)
+        assert cagr is not None
+        assert abs(cagr - 0.2599) < 0.01
+
+    def test_negative_years(self):
+        """年数为负时返回 None"""
+        assert _compute_cagr([200, 100], -1) is None
+
+    def test_both_negative(self):
+        """两个负值时用绝对值计算"""
+        cagr = _compute_cagr([-200, -100], 2)
+        assert cagr is not None
+        assert abs(cagr - 0.4142) < 0.01
+
+    def test_mixed_signs(self):
+        """一正一负时返回 None"""
+        assert _compute_cagr([100, -50], 2) is None
+
+
+# ===========================================================================
+# 10. _compute_quarterly_growth() 测试
+# ===========================================================================
+
+class TestComputeQuarterlyGrowth:
+    """测试 _compute_quarterly_growth() 季报同比增长率。"""
+
+    def test_returns_dict_with_none_on_failure(self):
+        """API 调用失败时返回 None 值的 dict"""
+        with patch("src.tools.akshare_provider.AKShareRateLimiter.call_with_retry", return_value=None):
+            result = _compute_quarterly_growth("600690")
+        assert isinstance(result, dict)
+        assert "revenue_growth_quarterly" in result
+        assert "earnings_growth_quarterly" in result
+        assert result["revenue_growth_quarterly"] is None
+        assert result["earnings_growth_quarterly"] is None
+
+    def test_computes_quarterly_growth(self):
+        """Mock 数据验证季报同比增长计算"""
+        import pandas as pd
+
+        # 构造包含两个年度 Q1 数据的利润表
+        df = pd.DataFrame({
+            "日期": ["2025-03-31", "2024-03-31"],
+            "营业收入": [1200, 1000],
+            "净利润": [240, 200],
+        })
+
+        with patch("src.tools.akshare_provider.AKShareRateLimiter.call_with_retry", return_value=df):
+            result = _compute_quarterly_growth("600690")
+
+        assert result["revenue_growth_quarterly"] is not None
+        assert abs(result["revenue_growth_quarterly"] - 0.2) < 1e-6
+        assert result["earnings_growth_quarterly"] is not None
+        assert abs(result["earnings_growth_quarterly"] - 0.2) < 1e-6
+
+    def test_no_yoy_data(self):
+        """只有一年季度数据时返回 None"""
+        import pandas as pd
+
+        df = pd.DataFrame({
+            "日期": ["2025-03-31"],
+            "营业收入": [1200],
+            "净利润": [240],
+        })
+
+        with patch("src.tools.akshare_provider.AKShareRateLimiter.call_with_retry", return_value=df):
+            result = _compute_quarterly_growth("600690")
+
+        assert result["revenue_growth_quarterly"] is None
+        assert result["earnings_growth_quarterly"] is None
+
+
+# ===========================================================================
+# 11. 多期增长率 & CAGR 集成测试
+# ===========================================================================
+
+class TestMultiPeriodGrowth:
+    """测试 _compute_derived_metrics 的多期增长率和 CAGR 计算。"""
+
+    @staticmethod
+    def _make_line_item(**kwargs):
+        return LineItem(
+            ticker="600690",
+            report_period="2024-12-31",
+            period="annual",
+            currency="CNY",
+            **kwargs,
+        )
+
+    def test_cagr_3y_computed(self):
+        """验证 3 年 CAGR 计算"""
+        items = [
+            self._make_line_item(total_revenue=2000, net_income=400, total_equity=1000),
+            self._make_line_item(total_revenue=1800, net_income=350, total_equity=950),
+            self._make_line_item(total_revenue=1500, net_income=300, total_equity=900),
+            self._make_line_item(total_revenue=1200, net_income=240, total_equity=800),
+        ]
+        with patch("src.tools.akshare_provider.search_line_items_ak", return_value=items):
+            result = _compute_derived_metrics("600690", "2024-12-31")
+        assert "revenue_cagr_3y" in result
+        assert result["revenue_cagr_3y"] is not None
+        assert "earnings_cagr_3y" in result
+        assert result["earnings_cagr_3y"] is not None
+        # 从 1200 到 2000 的 3 年 CAGR ≈ 18.56%
+        assert abs(result["revenue_cagr_3y"] - 0.1856) < 0.01
+
+    def test_growth_fallback_with_3_periods(self):
+        """第 2 期 revenue 为 None 时 fallback 到第 3 期"""
+        items = [
+            self._make_line_item(total_revenue=600, net_income=120, total_equity=500),
+            self._make_line_item(total_revenue=None, net_income=None, total_equity=None),
+            self._make_line_item(total_revenue=450, net_income=90, total_equity=400),
+        ]
+        with patch("src.tools.akshare_provider.search_line_items_ak", return_value=items):
+            result = _compute_derived_metrics("600690", "2024-12-31")
+        # 第 2 期是 None，所以 YoY fallback 到第 3 期用 CAGR
+        assert "revenue_growth" in result
+        assert result["revenue_growth"] is not None
+
+    def test_ebitda_growth_computed(self):
+        """验证 EBITDA 增长率计算"""
+        items = [
+            self._make_line_item(operating_income=200, depreciation_and_amortization=50),
+            self._make_line_item(operating_income=160, depreciation_and_amortization=40),
+        ]
+        with patch("src.tools.akshare_provider.search_line_items_ak", return_value=items):
+            result = _compute_derived_metrics("600690", "2024-12-31")
+        assert "ebitda_growth" in result
+        # EBITDA latest = 250, prev = 200, growth = 25%
+        assert abs(result["ebitda_growth"] - 0.25) < 1e-6

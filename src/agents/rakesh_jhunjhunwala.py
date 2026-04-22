@@ -68,7 +68,7 @@ def rakesh_jhunjhunwala_agent(state: AgentState, agent_id: str = "rakesh_jhunjhu
 
         # ─── Analyses ───────────────────────────────────────────────────────────
         progress.update_status(agent_id, ticker, "Analyzing growth")
-        growth_analysis = analyze_growth(financial_line_items)
+        growth_analysis = analyze_growth(financial_line_items, metrics)
 
         progress.update_status(agent_id, ticker, "Analyzing profitability")
         profitability_analysis = analyze_profitability(financial_line_items)
@@ -255,10 +255,15 @@ def analyze_profitability(financial_line_items: list) -> dict[str, any]:
     return {"score": score, "details": "; ".join(reasoning)}
 
 
-def analyze_growth(financial_line_items: list) -> dict[str, any]:
+def analyze_growth(financial_line_items: list, financial_metrics: list = None) -> dict[str, any]:
     """
     Analyze revenue and net income growth trends using CAGR.
     Jhunjhunwala favored companies with strong, consistent compound growth.
+
+    增长率取值优先级：
+    1. metrics.revenue_growth / metrics.revenue_cagr_3y（年报YoY，数据层已做fallback）
+    2. metrics.revenue_growth_quarterly（季报同比，作为补充fallback）
+    3. 自行从line_items计算CAGR（仅当metrics不可用时）
     """
     if len(financial_line_items) < 3:
         return {"score": 0, "details": "Insufficient data for growth analysis"}
@@ -266,63 +271,123 @@ def analyze_growth(financial_line_items: list) -> dict[str, any]:
     score = 0
     reasoning = []
 
+    # 获取最新 metrics 中的稳定增长率（优先级最高的数据源）
+    latest_metrics = financial_metrics[0] if financial_metrics else None
+
     # Revenue CAGR Analysis
+    # 优先使用 metrics 中已 fallback 的稳定值
+    revenue_cagr_3y = None
+    earnings_cagr_3y = None
+    if latest_metrics:
+        revenue_cagr_3y = getattr(latest_metrics, 'revenue_cagr_3y', None)
+        earnings_cagr_3y = getattr(latest_metrics, 'earnings_cagr_3y', None)
+
+    stable_rev_growth = None
+    if latest_metrics:
+        stable_rev_growth = latest_metrics.revenue_growth or latest_metrics.revenue_growth_quarterly
+
+    if stable_rev_growth is not None:
+        # 使用 metrics 中的稳定增长率
+        revenue_cagr_pct = stable_rev_growth * 100  # 转换为百分比以匹配原有评分阈值
+
+        if revenue_cagr_pct > 20:  # High growth
+            score += 3
+            reasoning.append(f"Excellent revenue growth: {revenue_cagr_pct:.1f}%")
+        elif revenue_cagr_pct > 15:  # Good growth
+            score += 2
+            reasoning.append(f"Good revenue growth: {revenue_cagr_pct:.1f}%")
+        elif revenue_cagr_pct > 10:  # Moderate growth
+            score += 1
+            reasoning.append(f"Moderate revenue growth: {revenue_cagr_pct:.1f}%")
+        else:
+            reasoning.append(f"Low revenue growth: {revenue_cagr_pct:.1f}%")
+        # 补充3年CAGR
+        if revenue_cagr_3y is not None:
+            reasoning.append(f"Revenue 3Y CAGR: {revenue_cagr_3y*100:.1f}%")
+    else:
+        # Fallback: 自行从 line_items 计算CAGR
+        revenues = [getattr(item, "revenue", None) for item in financial_line_items 
+                    if getattr(item, "revenue", None) is not None and getattr(item, "revenue", None) > 0]
+        
+        if len(revenues) >= 3:
+            initial_revenue = revenues[-1]  # Oldest
+            final_revenue = revenues[0]     # Latest
+            years = len(revenues) - 1
+            
+            if initial_revenue > 0:
+                revenue_cagr = ((final_revenue / initial_revenue) ** (1/years) - 1) * 100
+                
+                if revenue_cagr > 20:  # High growth
+                    score += 3
+                    reasoning.append(f"Excellent revenue CAGR: {revenue_cagr:.1f}%")
+                elif revenue_cagr > 15:  # Good growth
+                    score += 2
+                    reasoning.append(f"Good revenue CAGR: {revenue_cagr:.1f}%")
+                elif revenue_cagr > 10:  # Moderate growth
+                    score += 1
+                    reasoning.append(f"Moderate revenue CAGR: {revenue_cagr:.1f}%")
+                else:
+                    reasoning.append(f"Low revenue CAGR: {revenue_cagr:.1f}%")
+            else:
+                reasoning.append("Cannot calculate revenue CAGR from zero base")
+        else:
+            reasoning.append("Insufficient revenue data for CAGR calculation")
+
+    # Net Income Growth Analysis
+    # 优先使用 metrics 中已 fallback 的稳定值
+    stable_earnings_growth = None
+    if latest_metrics:
+        stable_earnings_growth = latest_metrics.earnings_growth or latest_metrics.earnings_growth_quarterly
+
+    if stable_earnings_growth is not None:
+        income_cagr_pct = stable_earnings_growth * 100
+
+        if income_cagr_pct > 25:  # Very high growth
+            score += 3
+            reasoning.append(f"Excellent income growth: {income_cagr_pct:.1f}%")
+        elif income_cagr_pct > 20:  # High growth
+            score += 2
+            reasoning.append(f"High income growth: {income_cagr_pct:.1f}%")
+        elif income_cagr_pct > 15:  # Good growth
+            score += 1
+            reasoning.append(f"Good income growth: {income_cagr_pct:.1f}%")
+        else:
+            reasoning.append(f"Moderate income growth: {income_cagr_pct:.1f}%")
+        # 补充3年CAGR
+        if earnings_cagr_3y is not None:
+            reasoning.append(f"Earnings 3Y CAGR: {earnings_cagr_3y*100:.1f}%")
+    else:
+        # Fallback: 自行从 line_items 计算CAGR
+        net_incomes = [getattr(item, "net_income", None) for item in financial_line_items 
+                       if getattr(item, "net_income", None) is not None and getattr(item, "net_income", None) > 0]
+        
+        if len(net_incomes) >= 3:
+            initial_income = net_incomes[-1]  # Oldest
+            final_income = net_incomes[0]     # Latest
+            years = len(net_incomes) - 1
+            
+            if initial_income > 0:
+                income_cagr = ((final_income / initial_income) ** (1/years) - 1) * 100
+                
+                if income_cagr > 25:  # Very high growth
+                    score += 3
+                    reasoning.append(f"Excellent income CAGR: {income_cagr:.1f}%")
+                elif income_cagr > 20:  # High growth
+                    score += 2
+                    reasoning.append(f"High income CAGR: {income_cagr:.1f}%")
+                elif income_cagr > 15:  # Good growth
+                    score += 1
+                    reasoning.append(f"Good income CAGR: {income_cagr:.1f}%")
+                else:
+                    reasoning.append(f"Moderate income CAGR: {income_cagr:.1f}%")
+            else:
+                reasoning.append("Cannot calculate income CAGR from zero base")
+        else:
+            reasoning.append("Insufficient net income data for CAGR calculation")
+
+    # Revenue Consistency Check (year-over-year) - 使用 line_items 检查一致性
     revenues = [getattr(item, "revenue", None) for item in financial_line_items 
                 if getattr(item, "revenue", None) is not None and getattr(item, "revenue", None) > 0]
-    
-    if len(revenues) >= 3:
-        initial_revenue = revenues[-1]  # Oldest
-        final_revenue = revenues[0]     # Latest
-        years = len(revenues) - 1
-        
-        if initial_revenue > 0:  # Fixed: Add zero check
-            revenue_cagr = ((final_revenue / initial_revenue) ** (1/years) - 1) * 100
-            
-            if revenue_cagr > 20:  # High growth
-                score += 3
-                reasoning.append(f"Excellent revenue CAGR: {revenue_cagr:.1f}%")
-            elif revenue_cagr > 15:  # Good growth
-                score += 2
-                reasoning.append(f"Good revenue CAGR: {revenue_cagr:.1f}%")
-            elif revenue_cagr > 10:  # Moderate growth
-                score += 1
-                reasoning.append(f"Moderate revenue CAGR: {revenue_cagr:.1f}%")
-            else:
-                reasoning.append(f"Low revenue CAGR: {revenue_cagr:.1f}%")
-        else:
-            reasoning.append("Cannot calculate revenue CAGR from zero base")
-    else:
-        reasoning.append("Insufficient revenue data for CAGR calculation")
-
-    # Net Income CAGR Analysis
-    net_incomes = [getattr(item, "net_income", None) for item in financial_line_items 
-                   if getattr(item, "net_income", None) is not None and getattr(item, "net_income", None) > 0]
-    
-    if len(net_incomes) >= 3:
-        initial_income = net_incomes[-1]  # Oldest
-        final_income = net_incomes[0]     # Latest
-        years = len(net_incomes) - 1
-        
-        if initial_income > 0:  # Fixed: Add zero check
-            income_cagr = ((final_income / initial_income) ** (1/years) - 1) * 100
-            
-            if income_cagr > 25:  # Very high growth
-                score += 3
-                reasoning.append(f"Excellent income CAGR: {income_cagr:.1f}%")
-            elif income_cagr > 20:  # High growth
-                score += 2
-                reasoning.append(f"High income CAGR: {income_cagr:.1f}%")
-            elif income_cagr > 15:  # Good growth
-                score += 1
-                reasoning.append(f"Good income CAGR: {income_cagr:.1f}%")
-            else:
-                reasoning.append(f"Moderate income CAGR: {income_cagr:.1f}%")
-        else:
-            reasoning.append("Cannot calculate income CAGR from zero base")
-    else:
-        reasoning.append("Insufficient net income data for CAGR calculation")
-
-    # Revenue Consistency Check (year-over-year)
     if len(revenues) >= 3:
         declining_years = sum(1 for i in range(1, len(revenues)) if revenues[i-1] > revenues[i])
         consistency_ratio = 1 - (declining_years / (len(revenues) - 1))
