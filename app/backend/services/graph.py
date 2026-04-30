@@ -165,7 +165,6 @@ def run_graph(
                 "portfolio": portfolio,
                 "start_date": start_date,
                 "end_date": end_date,
-                "analyst_signals": {},
             },
             "metadata": {
                 "show_reasoning": False,
@@ -173,6 +172,7 @@ def run_graph(
                 "model_provider": model_provider,
                 "request": request,  # Pass the request for agent-specific model access
             },
+            "analyst_signals": {},
         },
     )
 

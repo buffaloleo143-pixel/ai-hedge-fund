@@ -171,11 +171,9 @@ def stanley_druckenmiller_agent(state: AgentState, agent_id: str = "stanley_druc
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(druck_analysis, "Stanley Druckenmiller Agent")
 
-    state["data"]["analyst_signals"][agent_id] = druck_analysis
-
     progress.update_status(agent_id, None, "Done")
     
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: druck_analysis}}
 
 
 def analyze_growth_and_momentum(financial_line_items: list, prices: list, financial_metrics: list = None) -> dict:
@@ -278,7 +276,7 @@ def analyze_growth_and_momentum(financial_line_items: list, prices: list, financ
             details.append(f"Earnings 3Y CAGR: {earnings_cagr_3y:.1%}")
     else:
         # Fallback: 自行从 line_items 计算年化 CAGR
-        eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+        eps_values = [getattr(fi, 'earnings_per_share', None) for fi in financial_line_items if getattr(fi, 'earnings_per_share', None) is not None]
         if len(eps_values) >= 2:
             latest_eps = eps_values[0]
             older_eps = eps_values[-1]

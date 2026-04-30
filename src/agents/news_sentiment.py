@@ -191,15 +191,12 @@ def news_sentiment_agent(state: AgentState, agent_id: str = "news_sentiment_agen
     if state.get("metadata", {}).get("show_reasoning"):
         show_agent_reasoning(sentiment_analysis, "News Sentiment Analysis Agent")
 
-    if "analyst_signals" not in state["data"]:
-        state["data"]["analyst_signals"] = {}
-    state["data"]["analyst_signals"][agent_id] = sentiment_analysis
-
     progress.update_status(agent_id, None, "Done")
 
     return {
         "messages": [message],
         "data": state["data"],
+        "analyst_signals": {agent_id: sentiment_analysis},
     }
 
 

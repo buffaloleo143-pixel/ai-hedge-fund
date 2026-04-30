@@ -165,10 +165,9 @@ def rakesh_jhunjhunwala_agent(state: AgentState, agent_id: str = "rakesh_jhunjhu
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(jhunjhunwala_analysis, "Rakesh Jhunjhunwala Agent")
 
-    state["data"]["analyst_signals"][agent_id] = jhunjhunwala_analysis
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: jhunjhunwala_analysis}}
 
 
 def analyze_profitability(financial_line_items: list) -> dict[str, any]:

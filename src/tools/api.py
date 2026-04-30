@@ -40,7 +40,7 @@ def is_a_share(ticker: str) -> bool:
     return clean.isdigit() and len(clean) == 6
 
 
-def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: dict = None, max_retries: int = 3) -> requests.Response:
+def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: dict = None, max_retries: int = 3, timeout: int = 30) -> requests.Response:
     """
     Make an API request with rate limiting handling and moderate backoff.
     
@@ -50,6 +50,7 @@ def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: d
         method: HTTP method (GET or POST)
         json_data: JSON data for POST requests
         max_retries: Maximum number of retries (default: 3)
+        timeout: Request timeout in seconds (default: 30)
     
     Returns:
         requests.Response: The response object
@@ -57,17 +58,34 @@ def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: d
     Raises:
         Exception: If the request fails with a non-429 error
     """
-    for attempt in range(max_retries + 1):  # +1 for initial attempt
-        if method.upper() == "POST":
-            response = requests.post(url, headers=headers, json=json_data)
-        else:
-            response = requests.get(url, headers=headers)
+    timeout_retries = [5, 10, 15]  # Backoff delays for timeout retries
+    timeout_attempt = 0
+    rate_limit_retries = 0
+    
+    while True:
+        try:
+            if method.upper() == "POST":
+                response = requests.post(url, headers=headers, json=json_data, timeout=timeout)
+            else:
+                response = requests.get(url, headers=headers, timeout=timeout)
+        except requests.exceptions.Timeout:
+            if timeout_attempt < len(timeout_retries):
+                delay = timeout_retries[timeout_attempt]
+                logger.warning("Request to %s timed out (%ds). Retrying in %ds (timeout attempt %d/%d)...",
+                             url, timeout, delay, timeout_attempt + 1, len(timeout_retries))
+                time.sleep(delay)
+                timeout_attempt += 1
+                continue
+            else:
+                logger.error("Request to %s timed out after %d timeout retries", url, len(timeout_retries))
+                raise
         
-        if response.status_code == 429 and attempt < max_retries:
+        if response.status_code == 429 and rate_limit_retries < max_retries:
             # Linear backoff: 60s, 90s, 120s, 150s...
-            delay = 60 + (30 * attempt)
-            print(f"Rate limited (429). Attempt {attempt + 1}/{max_retries + 1}. Waiting {delay}s before retrying...")
+            delay = 60 + (30 * rate_limit_retries)
+            print(f"Rate limited (429). Attempt {rate_limit_retries + 1}/{max_retries}. Waiting {delay}s before retrying...")
             time.sleep(delay)
+            rate_limit_retries += 1
             continue
         
         # Return the response (whether success, other errors, or final 429)

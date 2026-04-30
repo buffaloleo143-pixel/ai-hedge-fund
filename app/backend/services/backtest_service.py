@@ -378,7 +378,7 @@ class BacktestService:
                 # Parse the decisions from the graph result
                 if result and result.get("messages"):
                     decisions = parse_hedge_fund_response(result["messages"][-1].content)
-                    analyst_signals = result.get("data", {}).get("analyst_signals", {})
+                    analyst_signals = result.get("analyst_signals", {})
                 else:
                     decisions = {}
                     analyst_signals = {}

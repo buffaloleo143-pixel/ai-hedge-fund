@@ -142,11 +142,9 @@ def growth_analyst_agent(state: AgentState, agent_id: str = "growth_analyst_agen
         show_agent_reasoning(growth_analysis, "Growth Analysis Agent")
 
     # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = growth_analysis
-
     progress.update_status(agent_id, None, "Done")
     
-    return {"messages": [msg], "data": data}
+    return {"messages": [msg], "data": data, "analyst_signals": {agent_id: growth_analysis}}
 
 #############################
 # Helper Functions

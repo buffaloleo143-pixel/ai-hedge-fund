@@ -1,5 +1,7 @@
 import os
 import json
+import threading
+import concurrent.futures
 from langchain_anthropic import ChatAnthropic
 from langchain_deepseek import ChatDeepSeek
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -75,6 +77,65 @@ class LLMModel(BaseModel):
     def is_ollama(self) -> bool:
         """Check if the model is an Ollama model"""
         return self.provider == ModelProvider.OLLAMA
+
+
+# ---------------------------------------------------------------------------
+# Global LLM concurrency limiter
+# ---------------------------------------------------------------------------
+# Limits the number of concurrent LLM API calls across all threads.
+# Default is 6; override via the LLM_CONCURRENCY_LIMIT env-var.
+_llm_semaphore = threading.Semaphore(int(os.getenv("LLM_CONCURRENCY_LIMIT", "6")))
+
+# Default timeout for LLM API calls (seconds); override via LLM_TIMEOUT_SECONDS env-var.
+_LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT_SECONDS", "150"))
+
+
+class LLMTimeoutError(TimeoutError):
+    """Raised when an LLM call or semaphore acquisition times out."""
+    pass
+
+
+def call_llm_with_limit(llm, prompt):
+    """Invoke an LLM while respecting the global concurrency limit and timeout.
+
+    Uses a threading.Semaphore so that at most *LLM_CONCURRENCY_LIMIT*
+    concurrent calls are in-flight at any time.
+
+    Two-level timeout protection:
+    1. Semaphore acquisition timeout (prevents infinite wait for a slot).
+    2. LLM invoke timeout (prevents infinite wait for API response).
+
+    Args:
+        llm: A LangChain chat model instance (e.g. ChatOpenAI).
+        prompt: The prompt / messages to pass to ``llm.invoke()``.
+
+    Returns:
+        Whatever ``llm.invoke(prompt)`` returns.
+
+    Raises:
+        LLMTimeoutError: If semaphore acquisition or LLM call times out.
+    """
+    # Level 1: acquire semaphore with timeout
+    acquired = _llm_semaphore.acquire(timeout=_LLM_TIMEOUT)
+    if not acquired:
+        raise LLMTimeoutError(
+            f"Could not acquire LLM semaphore within {_LLM_TIMEOUT}s — "
+            f"too many concurrent LLM calls (limit={os.getenv('LLM_CONCURRENCY_LIMIT', '6')})"
+        )
+    try:
+        # Level 2: invoke LLM with timeout using ThreadPoolExecutor
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(llm.invoke, prompt)
+            try:
+                return future.result(timeout=_LLM_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                raise LLMTimeoutError(
+                    f"LLM call timed out after {_LLM_TIMEOUT}s — "
+                    f"consider increasing LLM_TIMEOUT_SECONDS env-var"
+                )
+    finally:
+        _llm_semaphore.release()
 
 
 # Load models from JSON file

@@ -162,12 +162,9 @@ def warren_buffett_agent(state: AgentState, agent_id: str = "warren_buffett_agen
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(buffett_analysis, agent_id)
 
-    # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = buffett_analysis
-
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: buffett_analysis}}
 
 
 def analyze_fundamentals(metrics: list) -> dict[str, any]:
@@ -189,12 +186,15 @@ def analyze_fundamentals(metrics: list) -> dict[str, any]:
     else:
         reasoning.append("ROE data not available")
 
-    # Check Debt to Equity
+    # Check Debt to Equity (有息负债口径，阈值已相应调整)
     if latest_metrics.debt_to_equity and latest_metrics.debt_to_equity < 0.5:
         score += 2
         reasoning.append("Conservative debt levels")
+    elif latest_metrics.debt_to_equity and latest_metrics.debt_to_equity < 1.0:
+        score += 1
+        reasoning.append(f"Moderate debt to equity ratio of {latest_metrics.debt_to_equity:.2f}")
     elif latest_metrics.debt_to_equity:
-        reasoning.append(f"High debt to equity ratio of {latest_metrics.debt_to_equity:.1f}")
+        reasoning.append(f"High debt to equity ratio of {latest_metrics.debt_to_equity:.2f}")
     else:
         reasoning.append("Debt to equity data not available")
 
@@ -408,7 +408,7 @@ def calculate_owner_earnings(financial_line_items: list) -> dict[str, any]:
 
     # Core components
     net_income = latest.net_income
-    depreciation = latest.depreciation_and_amortization
+    depreciation = getattr(latest, 'depreciation_and_amortization', None)
     capex = latest.capital_expenditure
 
     if not all([net_income is not None, depreciation is not None, capex is not None]):
@@ -492,8 +492,7 @@ def estimate_maintenance_capex(financial_line_items: list) -> float:
             depreciation_values.append(item.depreciation_and_amortization)
 
     # Approach 2: Percentage of depreciation (typically 80-120% for maintenance)
-    latest_depreciation = financial_line_items[0].depreciation_and_amortization if financial_line_items[
-        0].depreciation_and_amortization else 0
+    latest_depreciation = getattr(financial_line_items[0], 'depreciation_and_amortization', None) or 0
 
     # Approach 3: Industry-specific heuristics
     latest_capex = abs(financial_line_items[0].capital_expenditure) if financial_line_items[

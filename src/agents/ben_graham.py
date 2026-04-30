@@ -97,12 +97,9 @@ def ben_graham_agent(state: AgentState, agent_id: str = "ben_graham_agent"):
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(graham_analysis, "Ben Graham Agent")
 
-    # Store signals in the overall state
-    state["data"]["analyst_signals"][agent_id] = graham_analysis
-
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: graham_analysis}}
 
 
 def analyze_earnings_stability(metrics: list, financial_line_items: list) -> dict:
@@ -120,8 +117,9 @@ def analyze_earnings_stability(metrics: list, financial_line_items: list) -> dic
 
     eps_vals = []
     for item in financial_line_items:
-        if item.earnings_per_share is not None:
-            eps_vals.append(item.earnings_per_share)
+        eps = getattr(item, 'earnings_per_share', None)
+        if eps is not None:
+            eps_vals.append(eps)
 
     if len(eps_vals) < 2:
         details.append("Not enough multi-year EPS data.")
@@ -226,11 +224,11 @@ def analyze_valuation_graham(financial_line_items: list, market_cap: float) -> d
         return {"score": 0, "details": "Insufficient data to perform valuation"}
 
     latest = financial_line_items[0]
-    current_assets = latest.current_assets or 0
-    total_liabilities = latest.total_liabilities or 0
-    book_value_ps = latest.book_value_per_share or 0
-    eps = latest.earnings_per_share or 0
-    shares_outstanding = latest.outstanding_shares or 0
+    current_assets = getattr(latest, 'current_assets', None) or 0
+    total_liabilities = getattr(latest, 'total_liabilities', None) or 0
+    book_value_ps = getattr(latest, 'book_value_per_share', None) or 0
+    eps = getattr(latest, 'earnings_per_share', None) or 0
+    shares_outstanding = getattr(latest, 'outstanding_shares', None) or 0
 
     details = []
     score = 0

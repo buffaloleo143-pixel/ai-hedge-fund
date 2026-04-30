@@ -104,7 +104,9 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
         health_score = 0
         if current_ratio and current_ratio > 1.5:  # Strong liquidity
             health_score += 1
-        if debt_to_equity and debt_to_equity < 0.5:  # Conservative debt levels
+        if debt_to_equity and debt_to_equity < 0.5:  # 有息负债口径：保守债务水平
+            health_score += 1
+        if debt_to_equity and debt_to_equity < 1.0:  # 有息负债口径：中等债务水平也可接受
             health_score += 1
         if free_cash_flow_per_share and earnings_per_share and free_cash_flow_per_share > earnings_per_share * 0.8:  # Strong FCF conversion
             health_score += 1
@@ -177,14 +179,12 @@ def fundamentals_analyst_agent(state: AgentState, agent_id: str = "fundamentals_
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(fundamental_analysis, "Fundamental Analysis Agent")
 
-    # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = fundamental_analysis
-
     progress.update_status(agent_id, None, "Done")
     
     return {
         "messages": [message],
         "data": data,
+        "analyst_signals": {agent_id: fundamental_analysis},
     }
 
 

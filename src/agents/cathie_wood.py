@@ -112,11 +112,9 @@ def cathie_wood_agent(state: AgentState, agent_id: str = "cathie_wood_agent"):
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(cw_analysis, agent_id)
 
-    state["data"]["analyst_signals"][agent_id] = cw_analysis
-
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: cw_analysis}}
 
 
 def analyze_disruptive_potential(metrics: list, financial_line_items: list) -> dict:

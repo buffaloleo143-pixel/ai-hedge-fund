@@ -130,7 +130,7 @@ async def run(request_data: HedgeFundRequest, request: Request, db: Session = De
                 final_data = CompleteEvent(
                     data={
                         "decisions": parse_hedge_fund_response(result.get("messages", [])[-1].content),
-                        "analyst_signals": result.get("data", {}).get("analyst_signals", {}),
+                        "analyst_signals": result.get("analyst_signals", {}),
                         "current_prices": result.get("data", {}).get("current_prices", {}),
                     }
                 )

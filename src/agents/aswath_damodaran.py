@@ -144,10 +144,9 @@ def aswath_damodaran_agent(state: AgentState, agent_id: str = "aswath_damodaran_
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(damodaran_signals, "Aswath Damodaran Agent")
 
-    state["data"]["analyst_signals"][agent_id] = damodaran_signals
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: damodaran_signals}}
 
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -228,27 +227,33 @@ def analyze_risk_profile(metrics: list, line_items: list) -> dict[str, any]:
     else:
         details.append("Beta NA")
 
-    # Debt / Equity
+    # Debt / Equity (有息负债口径)
     dte = getattr(latest, "debt_to_equity", None)
     if dte is not None:
-        if dte < 1:
+        if dte < 0.5:
             score += 1
-            details.append(f"D/E {dte:.1f}")
+            details.append(f"Low D/E {dte:.2f}")
+        elif dte < 1.0:
+            details.append(f"Moderate D/E {dte:.2f}")
         else:
-            details.append(f"High D/E {dte:.1f}")
+            details.append(f"High D/E {dte:.2f}")
     else:
         details.append("D/E NA")
 
     # Interest coverage
     ebit = getattr(latest, "ebit", None)
     interest = getattr(latest, "interest_expense", None)
-    if ebit and interest and interest != 0:
-        coverage = ebit / abs(interest)
+    if ebit and interest is not None and interest > 0:
+        coverage = ebit / interest
         if coverage > 3:
             score += 1
             details.append(f"Interest coverage × {coverage:.1f}")
         else:
             details.append(f"Weak coverage × {coverage:.1f}")
+    elif ebit and interest is not None and interest <= 0:
+        # 无净利息支出（利息收入>利息支出），覆盖倍数极高
+        score += 1
+        details.append("No net interest expense — coverage infinite")
     else:
         details.append("Interest coverage NA")
 

@@ -20,6 +20,7 @@ import argparse
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import json
+import os
 
 # Load environment variables from .env file
 load_dotenv()
@@ -73,19 +74,19 @@ def run_hedge_fund(
                     "portfolio": portfolio,
                     "start_date": start_date,
                     "end_date": end_date,
-                    "analyst_signals": {},
                 },
                 "metadata": {
                     "show_reasoning": show_reasoning,
                     "model_name": model_name,
                     "model_provider": model_provider,
                 },
+                "analyst_signals": {},
             },
         )
 
         return {
             "decisions": parse_hedge_fund_response(final_state["messages"][-1].content),
-            "analyst_signals": final_state["data"]["analyst_signals"],
+            "analyst_signals": final_state["analyst_signals"],
         }
     finally:
         # Stop progress tracking
@@ -95,6 +96,41 @@ def run_hedge_fund(
 def start(state: AgentState):
     """Initialize the workflow with the input message."""
     return state
+
+
+# Analyst layer definitions for parallel execution
+LAYER1_ANALYSTS = [
+    "technical_analyst",
+    "fundamentals_analyst",
+    "valuation_analyst",
+    "growth_analyst",
+    "sentiment_analyst",
+    "news_sentiment_analyst",
+]
+LAYER2_ANALYSTS = [
+    "ben_graham",
+    "michael_burry",
+    "peter_lynch",
+    "phil_fisher",
+    "aswath_damodaran",
+]
+LAYER3_ANALYSTS = [
+    "warren_buffett",
+    "charlie_munger",
+    "bill_ackman",
+    "cathie_wood",
+    "mohnish_pabrai",
+    "stanley_druckenmiller",
+    "nassim_taleb",
+    "rakesh_jhunjhunwala",
+]
+
+
+def layer_join(state: AgentState):
+    """No-op join node to synchronize layer completion.
+    不返回analyst_signals，避免覆盖已累积的Agent信号。
+    """
+    return {"messages": [], "data": {}, "metadata": {}}
 
 
 def create_workflow(selected_analysts=None):
@@ -108,20 +144,67 @@ def create_workflow(selected_analysts=None):
     # Default to all analysts if none selected
     if selected_analysts is None:
         selected_analysts = list(analyst_nodes.keys())
+    selected_analysts = [k for k in selected_analysts if k in analyst_nodes]
+
     # Add selected analyst nodes
     for analyst_key in selected_analysts:
         node_name, node_func = analyst_nodes[analyst_key]
         workflow.add_node(node_name, node_func)
-        workflow.add_edge("start_node", node_name)
 
     # Always add risk and portfolio management
     workflow.add_node("risk_management_agent", risk_management_agent)
     workflow.add_node("portfolio_manager", portfolio_management_agent)
 
-    # Connect selected analysts to risk management
-    for analyst_key in selected_analysts:
-        node_name = analyst_nodes[analyst_key][0]
-        workflow.add_edge(node_name, "risk_management_agent")
+    # Check if parallel execution is disabled (fallback to sequential)
+    parallel = os.getenv("PARALLEL_ANALYSTS", "true").lower() != "false"
+
+    if not parallel:
+        # Fallback to sequential execution for backwards compatibility
+        for analyst_key in selected_analysts:
+            node_name = analyst_nodes[analyst_key][0]
+            workflow.add_edge("start_node", node_name)
+            workflow.add_edge(node_name, "risk_management_agent")
+    else:
+        # Layered parallel execution
+        layer1 = [k for k in LAYER1_ANALYSTS if k in selected_analysts]
+        layer2 = [k for k in LAYER2_ANALYSTS if k in selected_analysts]
+        layer3 = [k for k in LAYER3_ANALYSTS if k in selected_analysts]
+
+        def connect_via_join(prev_nodes, next_keys, join_name):
+            """Connect previous nodes to next layer via a join node."""
+            if not next_keys:
+                return prev_nodes
+            workflow.add_node(join_name, layer_join)
+            for node in prev_nodes:
+                workflow.add_edge(node, join_name)
+            for key in next_keys:
+                workflow.add_edge(join_name, analyst_nodes[key][0])
+            return [analyst_nodes[key][0] for key in next_keys]
+
+        # Layer 1: start -> layer1 agents (parallel)
+        current_nodes = ["start_node"]
+        if layer1:
+            for key in layer1:
+                workflow.add_edge("start_node", analyst_nodes[key][0])
+            current_nodes = [analyst_nodes[key][0] for key in layer1]
+
+        # Layer 1 -> Layer 2
+        if layer2:
+            current_nodes = connect_via_join(current_nodes, layer2, "layer1_join")
+
+        # Layer 2 -> Layer 3
+        if layer3:
+            current_nodes = connect_via_join(current_nodes, layer3, "layer2_join")
+
+        # Last layer -> risk manager
+        if current_nodes == ["start_node"]:
+            # No analysts selected
+            workflow.add_edge("start_node", "risk_management_agent")
+        else:
+            workflow.add_node("final_join", layer_join)
+            for node in current_nodes:
+                workflow.add_edge(node, "final_join")
+            workflow.add_edge("final_join", "risk_management_agent")
 
     workflow.add_edge("risk_management_agent", "portfolio_manager")
     workflow.add_edge("portfolio_manager", END)

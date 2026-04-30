@@ -77,8 +77,10 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
         # Valuation models
         # ------------------------------------------------------------------
         # Handle potential None values for working capital
-        if li_curr.working_capital is not None and li_prev.working_capital is not None:
-            wc_change = li_curr.working_capital - li_prev.working_capital
+        li_curr_wc = getattr(li_curr, 'working_capital', None)
+        li_prev_wc = getattr(li_prev, 'working_capital', None)
+        if li_curr_wc is not None and li_prev_wc is not None:
+            wc_change = li_curr_wc - li_prev_wc
         else:
             wc_change = 0  # Default to 0 if working capital data is unavailable
 
@@ -86,7 +88,7 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
         # 增长率取值优先级：earnings_growth（年报YoY，已fallback）-> earnings_growth_quarterly
         owner_val = calculate_owner_earnings_value(
             net_income=li_curr.net_income,
-            depreciation=li_curr.depreciation_and_amortization,
+            depreciation=getattr(li_curr, 'depreciation_and_amortization', None),
             capex=li_curr.capital_expenditure,
             working_capital_change=wc_change,
             growth_rate=most_recent_metrics.earnings_growth or most_recent_metrics.earnings_growth_quarterly or 0.05,
@@ -272,12 +274,9 @@ def valuation_analyst_agent(state: AgentState, agent_id: str = "valuation_analys
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(valuation_analysis, "Valuation Analysis Agent")
 
-    # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = valuation_analysis
-
     progress.update_status(agent_id, None, "Done")
     
-    return {"messages": [msg], "data": data}
+    return {"messages": [msg], "data": data, "analyst_signals": {agent_id: valuation_analysis}}
 
 #############################
 # Helper Valuation Functions
@@ -411,7 +410,10 @@ def calculate_wacc(
     cost_of_equity = risk_free_rate + beta_proxy * market_risk_premium
     
     # Cost of Debt - estimate from interest coverage
-    if interest_coverage and interest_coverage > 0:
+    if interest_coverage and interest_coverage >= 999.0:
+        # 无利息支出：利息收入>利息支出，使用最低债务成本
+        cost_of_debt = risk_free_rate + 0.01
+    elif interest_coverage and interest_coverage > 0:
         # Higher coverage = lower cost of debt
         cost_of_debt = max(risk_free_rate + 0.01, risk_free_rate + (10 / interest_coverage))
     else:

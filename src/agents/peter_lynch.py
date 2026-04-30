@@ -168,12 +168,9 @@ def peter_lynch_agent(state: AgentState, agent_id: str = "peter_lynch_agent"):
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(lynch_analysis, "Peter Lynch Agent")
 
-    # Save signals to state
-    state["data"]["analyst_signals"][agent_id] = lynch_analysis
-
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: lynch_analysis}}
 
 
 def analyze_lynch_growth(financial_line_items: list) -> dict:
@@ -214,7 +211,7 @@ def analyze_lynch_growth(financial_line_items: list) -> dict:
         details.append("Not enough revenue data to assess growth.")
 
     # 2) EPS Growth
-    eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+    eps_values = [getattr(fi, 'earnings_per_share', None) for fi in financial_line_items if getattr(fi, 'earnings_per_share', None) is not None]
     if len(eps_values) >= 2:
         latest_eps = eps_values[0]
         older_eps = eps_values[-1]
@@ -319,7 +316,7 @@ def analyze_lynch_valuation(financial_line_items: list, market_cap: float | None
 
     # Gather data for P/E
     net_incomes = [fi.net_income for fi in financial_line_items if fi.net_income is not None]
-    eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+    eps_values = [getattr(fi, 'earnings_per_share', None) for fi in financial_line_items if getattr(fi, 'earnings_per_share', None) is not None]
 
     # Approximate P/E via (market cap / net income) if net income is positive
     pe_ratio = None

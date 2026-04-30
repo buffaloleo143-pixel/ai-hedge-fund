@@ -1,10 +1,14 @@
 """Helper functions for LLM"""
 
 import json
+import logging
+import time
 from pydantic import BaseModel
-from src.llm.models import get_model, get_model_info
+from src.llm.models import get_model, get_model_info, call_llm_with_limit, LLMTimeoutError
 from src.utils.progress import progress
 from src.graph.state import AgentState
+
+logger = logging.getLogger(__name__)
 
 
 def call_llm(
@@ -58,8 +62,13 @@ def call_llm(
     # Call the LLM with retries
     for attempt in range(max_retries):
         try:
-            # Call the LLM
-            result = llm.invoke(prompt)
+            # Call the LLM (with concurrency limiting) and measure time
+            start_time = time.time()
+            result = call_llm_with_limit(llm, prompt)
+            elapsed = time.time() - start_time
+            if elapsed > 30:
+                logger.warning("Slow LLM call detected: agent=%s, elapsed=%.1fs (threshold=30s)",
+                             agent_name, elapsed)
 
             # For non-JSON support models, we need to extract and parse the JSON manually
             if model_info and not model_info.has_json_mode():
@@ -70,7 +79,15 @@ def call_llm(
                 return result
 
         except Exception as e:
-            if agent_name:
+            if isinstance(e, LLMTimeoutError):
+                if agent_name:
+                    progress.update_status(agent_name, None, f"Timeout - retry {attempt + 1}/{max_retries}")
+                if attempt == max_retries - 1:
+                    print(f"LLM call timed out after {max_retries} attempts: {e}")
+                    if default_factory:
+                        return default_factory()
+                    return create_default_response(pydantic_model)
+            elif agent_name:
                 progress.update_status(agent_name, None, f"Error - retry {attempt + 1}/{max_retries}")
 
             if attempt == max_retries - 1:

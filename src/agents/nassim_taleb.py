@@ -175,12 +175,9 @@ def nassim_taleb_agent(state: AgentState, agent_id: str = "nassim_taleb_agent"):
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(taleb_analysis, agent_id)
 
-    # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = taleb_analysis
-
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: taleb_analysis}}
 
 
 ###############################################################################
@@ -312,13 +309,13 @@ def analyze_antifragility(metrics: list, line_items: list, market_cap: float | N
     else:
         reasoning.append("Cash/debt data not available")
 
-    # Debt-to-equity
+    # Debt-to-equity (有息负债口径，阈值已相应调整)
     debt_to_equity = getattr(latest_metrics, "debt_to_equity", None) if latest_metrics else None
     if debt_to_equity is not None:
-        if debt_to_equity < 0.3:
+        if debt_to_equity < 0.5:
             score += 2
             reasoning.append(f"Taleb-approved low leverage (D/E {debt_to_equity:.2f})")
-        elif debt_to_equity < 0.7:
+        elif debt_to_equity < 1.0:
             score += 1
             reasoning.append(f"Moderate leverage (D/E {debt_to_equity:.2f})")
         else:
@@ -474,15 +471,15 @@ def analyze_fragility(metrics: list, line_items: list) -> dict[str, any]:
     reasoning = []
     latest_metrics = metrics[0]
 
-    # Leverage fragility
+    # Leverage fragility (有息负债口径，阈值已相应调整)
     debt_to_equity = getattr(latest_metrics, "debt_to_equity", None)
     if debt_to_equity is not None:
-        if debt_to_equity > 2.0:
+        if debt_to_equity > 1.5:
             reasoning.append(f"Extremely fragile balance sheet (D/E {debt_to_equity:.2f})")
-        elif debt_to_equity > 1.0:
+        elif debt_to_equity > 0.8:
             score += 1
             reasoning.append(f"Elevated leverage (D/E {debt_to_equity:.2f})")
-        elif debt_to_equity > 0.5:
+        elif debt_to_equity > 0.3:
             score += 2
             reasoning.append(f"Moderate leverage (D/E {debt_to_equity:.2f})")
         else:
@@ -494,7 +491,11 @@ def analyze_fragility(metrics: list, line_items: list) -> dict[str, any]:
     # Interest coverage
     interest_coverage = getattr(latest_metrics, "interest_coverage", None)
     if interest_coverage is not None:
-        if interest_coverage > 10:
+        if interest_coverage >= 999.0:
+            # 999.0 = 无利息支出（利息收入>利息支出），无偿债压力
+            score += 2
+            reasoning.append("No net interest expense — debt service is irrelevant")
+        elif interest_coverage > 10:
             score += 2
             reasoning.append(f"Interest coverage {interest_coverage:.1f}x — debt is irrelevant")
         elif interest_coverage > 5:

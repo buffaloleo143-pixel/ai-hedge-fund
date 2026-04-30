@@ -165,13 +165,11 @@ def charlie_munger_agent(state: AgentState, agent_id: str = "charlie_munger_agen
         show_agent_reasoning(munger_analysis, "Charlie Munger Agent")
 
     progress.update_status(agent_id, None, "Done")
-    
-    # Add signals to the overall state
-    state["data"]["analyst_signals"][agent_id] = munger_analysis
 
     return {
         "messages": [message],
-        "data": state["data"]
+        "data": state["data"],
+        "analyst_signals": {agent_id: munger_analysis},
     }
 
 

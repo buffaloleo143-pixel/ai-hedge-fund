@@ -167,11 +167,9 @@ def michael_burry_agent(state: AgentState, agent_id: str = "michael_burry_agent"
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(burry_analysis, "Michael Burry Agent")
 
-    state["data"]["analyst_signals"][agent_id] = burry_analysis
-
     progress.update_status(agent_id, None, "Done")
 
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: burry_analysis}}
 
 
 ###############################################################################

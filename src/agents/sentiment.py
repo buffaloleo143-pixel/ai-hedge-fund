@@ -166,12 +166,10 @@ def sentiment_analyst_agent(state: AgentState, agent_id: str = "sentiment_analys
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(sentiment_analysis, "Sentiment Analysis Agent")
 
-    # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = sentiment_analysis
-
     progress.update_status(agent_id, None, "Done")
 
     return {
         "messages": [message],
         "data": data,
+        "analyst_signals": {agent_id: sentiment_analysis},
     }

@@ -140,14 +140,12 @@ def bill_ackman_agent(state: AgentState, agent_id: str = "bill_ackman_agent"):
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(ackman_analysis, "Bill Ackman Agent")
     
-    # Add signals to the overall state
-    state["data"]["analyst_signals"][agent_id] = ackman_analysis
-
     progress.update_status(agent_id, None, "Done")
 
     return {
         "messages": [message],
-        "data": state["data"]
+        "data": state["data"],
+        "analyst_signals": {agent_id: ackman_analysis},
     }
 
 

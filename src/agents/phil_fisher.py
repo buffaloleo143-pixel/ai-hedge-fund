@@ -175,11 +175,9 @@ def phil_fisher_agent(state: AgentState, agent_id: str = "phil_fisher_agent"):
     if state["metadata"].get("show_reasoning"):
         show_agent_reasoning(fisher_analysis, "Phil Fisher Agent")
 
-    state["data"]["analyst_signals"][agent_id] = fisher_analysis
-
     progress.update_status(agent_id, None, "Done")
     
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: fisher_analysis}}
 
 
 def analyze_fisher_growth_quality(financial_line_items: list) -> dict:
@@ -225,7 +223,7 @@ def analyze_fisher_growth_quality(financial_line_items: list) -> dict:
         details.append("Not enough revenue data points for growth calculation.")
 
     # 2. EPS Growth (annualized CAGR)
-    eps_values = [fi.earnings_per_share for fi in financial_line_items if fi.earnings_per_share is not None]
+    eps_values = [getattr(fi, 'earnings_per_share', None) for fi in financial_line_items if getattr(fi, 'earnings_per_share', None) is not None]
     if len(eps_values) >= 2:
         latest_eps = eps_values[0]
         oldest_eps = eps_values[-1]

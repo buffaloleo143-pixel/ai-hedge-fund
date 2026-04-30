@@ -26,7 +26,7 @@ def portfolio_management_agent(state: AgentState, agent_id: str = "portfolio_man
     """Makes final trading decisions and generates orders for multiple tickers"""
 
     portfolio = state["data"]["portfolio"]
-    analyst_signals = state["data"]["analyst_signals"]
+    analyst_signals = state["analyst_signals"]
     tickers = state["data"]["tickers"]
 
     position_limits = {}

@@ -139,9 +139,7 @@ def mohnish_pabrai_agent(state: AgentState, agent_id: str = "mohnish_pabrai_agen
 
     progress.update_status(agent_id, None, "Done")
 
-    state["data"]["analyst_signals"][agent_id] = pabrai_analysis
-
-    return {"messages": [message], "data": state["data"]}
+    return {"messages": [message], "data": state["data"], "analyst_signals": {agent_id: pabrai_analysis}}
 
 
 def analyze_downside_protection(financial_line_items: list) -> dict[str, any]:

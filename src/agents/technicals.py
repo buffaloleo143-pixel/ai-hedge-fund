@@ -164,14 +164,12 @@ def technical_analyst_agent(state: AgentState, agent_id: str = "technical_analys
     if state["metadata"]["show_reasoning"]:
         show_agent_reasoning(technical_analysis, "Technical Analyst")
 
-    # Add the signal to the analyst_signals list
-    state["data"]["analyst_signals"][agent_id] = technical_analysis
-
     progress.update_status(agent_id, None, "Done")
 
     return {
         "messages": state["messages"] + [message],
         "data": data,
+        "analyst_signals": {agent_id: technical_analysis},
     }
 
 

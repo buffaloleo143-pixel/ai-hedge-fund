@@ -156,3 +156,117 @@ class TestCompanyNewsCache:
         result = cache.get_company_news("AAPL")
         assert len(result) == 2
         assert result[0]["title"] == "Earnings Beat"  # original preserved
+
+
+class TestThreadSafety:
+    """Test thread-safety guarantees of Cache with RLock."""
+
+    def test_concurrent_set_prices_no_data_loss(self):
+        """Multiple threads setting prices concurrently should not lose data."""
+        import threading
+
+        cache = Cache()
+        errors = []
+
+        def write_prices(ticker, items):
+            try:
+                for item in items:
+                    cache.set_prices(ticker, [item])
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for i in range(10):
+            t = threading.Thread(
+                target=write_prices,
+                args=("AAPL", [{"time": f"2024-01-{j:02d}", "close": float(j)} for j in range(i * 5 + 1, i * 5 + 6)]),
+            )
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        result = cache.get_prices("AAPL")
+        assert result is not None
+        # All unique time keys should be present (50 total)
+        assert len(result) == 50
+
+    def test_concurrent_get_and_set(self):
+        """Concurrent reads and writes should not raise exceptions."""
+        import threading
+
+        cache = Cache()
+        cache.set_prices("AAPL", [{"time": "2024-01-01", "close": 150.0}])
+        errors = []
+
+        def reader():
+            try:
+                for _ in range(100):
+                    cache.get_prices("AAPL")
+            except Exception as e:
+                errors.append(e)
+
+        def writer():
+            try:
+                for i in range(100):
+                    cache.set_prices("AAPL", [{"time": f"2024-01-{i % 28 + 1}", "close": float(i)}])
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=reader) for _ in range(5)]
+        threads += [threading.Thread(target=writer) for _ in range(3)]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+
+    def test_rlock_reentrancy(self):
+        """RLock should allow reentrant locking from the same thread."""
+        cache = Cache()
+        # Simulate a scenario where set_* calls _merge_data which could be
+        # wrapped in the same lock — RLock must not deadlock.
+        cache.set_prices("AAPL", [{"time": "2024-01-01", "close": 150.0}])
+        cache.set_prices("AAPL", [{"time": "2024-01-01", "close": 999.0}])
+        result = cache.get_prices("AAPL")
+        assert len(result) == 1
+        assert result[0]["close"] == 150.0
+
+    def test_concurrent_set_different_caches(self):
+        """Concurrent writes to different cache types should all succeed."""
+        import threading
+
+        cache = Cache()
+        errors = []
+
+        def write_fn(fn, key_field, data):
+            try:
+                for item in data:
+                    fn("AAPL", [item])
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=write_fn, args=(cache.set_prices, "time", [{"time": f"2024-01-{i}", "close": 1.0} for i in range(1, 11)])),
+            threading.Thread(target=write_fn, args=(cache.set_financial_metrics, "report_period", [{"report_period": f"2024-Q{i}", "rev": 1.0} for i in range(1, 5)])),
+            threading.Thread(target=write_fn, args=(cache.set_line_items, "report_period", [{"report_period": f"2024-Q{i}", "rev": 1.0} for i in range(1, 5)])),
+            threading.Thread(target=write_fn, args=(cache.set_insider_trades, "filing_date", [{"filing_date": f"2024-01-{i}", "shares": 100} for i in range(1, 11)])),
+            threading.Thread(target=write_fn, args=(cache.set_company_news, "date", [{"date": f"2024-01-{i}", "title": f"News {i}"} for i in range(1, 11)])),
+        ]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        assert len(cache.get_prices("AAPL")) == 10
+        assert len(cache.get_financial_metrics("AAPL")) == 4
+        assert len(cache.get_line_items("AAPL")) == 4
+        assert len(cache.get_insider_trades("AAPL")) == 10
+        assert len(cache.get_company_news("AAPL")) == 10
